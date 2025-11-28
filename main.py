@@ -268,6 +268,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     data = query.data
+    logger.info(f"DEBUG: button_callback received data: {data}")
     
     if data == "main_menu":
         await query.edit_message_text(
@@ -276,6 +277,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     
     elif data == "check_menu":
+        logger.info("DEBUG: Processing check_menu callback")
         await query.edit_message_text(
             "✅ Проверить клиента\n\nВыберите способ проверки:",
             reply_markup=get_check_menu_keyboard()
@@ -667,7 +669,8 @@ def create_telegram_app():
     telegram_app.add_handler(CommandHandler("start", start_command))
     # Note: /cancel is still available as fallback in ConversationHandler's
     
-    # Add callback query handler for menu navigation buttons    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu)$"))
+    # Add callback query handler for menu navigation buttons
+    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu)$"))
     
     # Conversation handlers for checking
     check_telegram_conv = ConversationHandler(
