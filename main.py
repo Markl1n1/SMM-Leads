@@ -251,6 +251,7 @@ def validate_facebook_username(username: str) -> tuple[bool, str, str]:
     CHECK_BY_FB_USERNAME,
     CHECK_BY_FB_ID,
     CHECK_BY_PHONE,
+    CHECK_BY_FULLNAME,
     # Add states
     ADD_MENU,
     ADD_FULLNAME,
@@ -262,7 +263,7 @@ def validate_facebook_username(username: str) -> tuple[bool, str, str]:
     ADD_FB_LINK,
     ADD_TELEGRAM_USER,
     ADD_MANAGER_NAME
-) = range(15)
+) = range(16)
 
 # Store user data during conversation
 user_data_store = {}
@@ -285,6 +286,7 @@ def get_check_menu_keyboard():
         [InlineKeyboardButton("👤 Facebook Username", callback_data="check_fb_username")],
         [InlineKeyboardButton("🆔 Facebook ID", callback_data="check_fb_id")],
         [InlineKeyboardButton("🔢 Phone", callback_data="check_phone")],
+        [InlineKeyboardButton("👤 Full Name", callback_data="check_fullname")],
         [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -422,6 +424,13 @@ async def check_phone_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text("🔢 Введите номер телефона для проверки:")
     return CHECK_BY_PHONE
 
+async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for check by fullname conversation"""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("👤 Введите имя (или часть имени) для проверки:")
+    return CHECK_BY_FULLNAME
+
 # Add callback
 async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start adding new lead"""
@@ -549,13 +558,122 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
         else:
             message = "❌ Клиент не найден."
         
-            await update.message.reply_text(
+        await update.message.reply_text(
             message,
             reply_markup=get_main_menu_keyboard()
-            )
+        )
         
     except Exception as e:
         logger.error(f"Error checking by {field_name}: {e}", exc_info=True)
+        await update.message.reply_text(
+            "❌ Произошла ошибка при проверке. Попробуйте позже.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    
+    return ConversationHandler.END
+
+async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check by fullname using contains search with limit of 10 results"""
+    search_value = update.message.text.strip()
+    
+    if not search_value:
+        await update.message.reply_text("❌ Имя не может быть пустым. Попробуйте снова:")
+        return CHECK_BY_FULLNAME
+    
+    # Get Supabase client
+    client = get_supabase_client()
+    if not client:
+        await update.message.reply_text(
+            "❌ Ошибка: Не удалось подключиться к базе данных.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+    
+    try:
+        # Search using ilike with contains pattern (case-insensitive)
+        response = client.table(TABLE_NAME).select("*").ilike("fullname", f"%{search_value}%").execute()
+        
+        # Field labels mapping (Russian)
+        field_labels = {
+            'fullname': 'Имя',
+            'phone': 'Телефон',
+            'email': 'Email',
+            'country': 'Страна',
+            'facebook_id': 'Facebook ID',
+            'facebook_username': 'Facebook Username',
+            'facebook_link': 'Facebook Link',
+            'telegram_user': 'Telegram',
+            'manager_name': 'Добавил',
+            'created_at': 'Дата'
+        }
+        
+        if response.data and len(response.data) > 0:
+            results = response.data
+            logger.info(f"DEBUG: Found {len(results)} result(s) for fullname search: {search_value}")
+            
+            # Check if more than 10 results
+            if len(results) > 10:
+                await update.message.reply_text(
+                    "❌ Слишком много совпадений. Попробуйте другой фильтр поиска.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+                return ConversationHandler.END
+            
+            # If multiple results, show all
+            if len(results) > 1:
+                message_parts = [f"✅ Найдено клиентов: {len(results)}\n"]
+                
+                for idx, result in enumerate(results, 1):
+                    message_parts.append(f"\n--- Клиент {idx} ---")
+                    for field_name_key, field_label in field_labels.items():
+                        value = result.get(field_name_key)
+                        
+                        # Skip if None, empty string, or 'Не указано'
+                        if value is None or value == '' or value == 'Не указано':
+                            continue
+                        
+                        # Format date field
+                        if field_name_key == 'created_at':
+                            try:
+                                dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+                                value = dt.strftime('%d.%m.%Y %H:%M')
+                            except:
+                                pass
+                        
+                        message_parts.append(f"{field_label}: {value}")
+            else:
+                # Single result
+                result = results[0]
+                message_parts = ["✅ Клиент найден."]
+                
+                for field_name_key, field_label in field_labels.items():
+                    value = result.get(field_name_key)
+                    
+                    # Skip if None, empty string, or 'Не указано'
+                    if value is None or value == '' or value == 'Не указано':
+                        continue
+            
+                    # Format date field
+                    if field_name_key == 'created_at':
+                        try:
+                            dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+                            value = dt.strftime('%d.%m.%Y %H:%M')
+                        except:
+                            pass
+                    
+                    message_parts.append(f"{field_label}: {value}")
+            
+            message = "\n".join(message_parts)
+        else:
+            message = "❌ Клиент не найден."
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=get_main_menu_keyboard()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error checking by fullname: {e}", exc_info=True)
         await update.message.reply_text(
             "❌ Произошла ошибка при проверке. Попробуйте позже.",
             reply_markup=get_main_menu_keyboard()
@@ -578,6 +696,9 @@ async def check_fb_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await check_by_field(update, context, "phone", "Номер телефона", CHECK_BY_PHONE)
+
+async def check_fullname_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await check_by_fullname(update, context)
 
 # Add field handlers
 async def add_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, field_name: str, field_label: str, next_state: int):
@@ -909,6 +1030,13 @@ def create_telegram_app():
         per_message=False,
     )
     
+    check_fullname_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(check_fullname_callback, pattern="^check_fullname$")],
+        states={CHECK_BY_FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fullname_input)]},
+        fallbacks=[],
+        per_message=False,
+    )
+    
     # Conversation handler for adding
     add_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_new_callback, pattern="^add_new$")],
@@ -946,6 +1074,7 @@ def create_telegram_app():
     telegram_app.add_handler(check_fb_username_conv)
     telegram_app.add_handler(check_fb_id_conv)
     telegram_app.add_handler(check_phone_conv)
+    telegram_app.add_handler(check_fullname_conv)
     telegram_app.add_handler(add_conv)
     
     logger.info("Telegram application initialized")
