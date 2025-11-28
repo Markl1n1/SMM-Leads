@@ -147,6 +147,12 @@ def normalize_phone(phone: str) -> str:
     # Remove all non-digit characters
     return ''.join(filter(str.isdigit, phone))
 
+def escape_html(text: str) -> str:
+    """Escape HTML special characters"""
+    if not text:
+        return text
+    return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
 import re
 from urllib.parse import urlparse, parse_qs
 
@@ -428,7 +434,7 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
     """Entry point for check by fullname conversation"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("👤 Введите имя (или часть имени) для проверки:")
+    await query.edit_message_text("👤 Введите полное имя (или фамилию):")
     return CHECK_BY_FULLNAME
 
 # Add callback
@@ -531,7 +537,9 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
                             except:
                                 pass
                         
-                        message_parts.append(f"{field_label}: {value}")
+                        # Format value in code tags for easy copying
+                        escaped_value = escape_html(str(value))
+                        message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
             else:
                 # Single result
                 result = results[0]
@@ -552,7 +560,9 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
                         except:
                             pass
                     
-                    message_parts.append(f"{field_label}: {value}")
+                    # Format value in code tags for easy copying
+                    escaped_value = escape_html(str(value))
+                    message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
             
             message = "\n".join(message_parts)
         else:
@@ -560,7 +570,8 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
         
         await update.message.reply_text(
             message,
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode='HTML'
         )
         
     except Exception as e:
@@ -640,7 +651,9 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             except:
                                 pass
                         
-                        message_parts.append(f"{field_label}: {value}")
+                        # Format value in code tags for easy copying
+                        escaped_value = escape_html(str(value))
+                        message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
             else:
                 # Single result
                 result = results[0]
@@ -661,7 +674,9 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except:
                             pass
                     
-                    message_parts.append(f"{field_label}: {value}")
+                    # Format value in code tags for easy copying
+                    escaped_value = escape_html(str(value))
+                    message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
             
             message = "\n".join(message_parts)
         else:
@@ -669,7 +684,8 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(
             message,
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode='HTML'
         )
         
     except Exception as e:
