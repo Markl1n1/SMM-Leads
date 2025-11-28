@@ -1066,6 +1066,8 @@ def initialize_telegram_app():
     """Initialize Telegram app - called on module import (needed for gunicorn)"""
     global telegram_app, telegram_event_loop
     
+    logger.info("Starting Telegram app initialization...")
+    
     # Validate environment variables first
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not found - Telegram app will not be initialized")
@@ -1075,8 +1077,15 @@ def initialize_telegram_app():
         logger.error("WEBHOOK_URL not found - Telegram app will not be initialized")
         return
     
-    # Create Telegram app
-    create_telegram_app()
+    logger.info("Environment variables validated, creating Telegram app...")
+    
+    try:
+        # Create Telegram app
+        create_telegram_app()
+        logger.info("Telegram app created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create Telegram app: {e}", exc_info=True)
+        return
     
     # Initialize Telegram bot in a separate thread
     import asyncio
@@ -1085,15 +1094,27 @@ def initialize_telegram_app():
     def run_telegram_setup():
         """Run async webhook setup and start update processing in a separate thread"""
         global telegram_event_loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        telegram_event_loop = loop  # Save reference for webhook
-        loop.run_until_complete(telegram_app.initialize())
-        loop.run_until_complete(setup_webhook())
-        # Start processing updates
-        loop.run_until_complete(telegram_app.start())
-        # Keep the loop running to process updates
-        loop.run_forever()
+        try:
+            logger.info("Starting Telegram setup in background thread...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            telegram_event_loop = loop  # Save reference for webhook
+            logger.info("Event loop created, initializing Telegram app...")
+            
+            loop.run_until_complete(telegram_app.initialize())
+            logger.info("Telegram app initialized, setting up webhook...")
+            
+            loop.run_until_complete(setup_webhook())
+            logger.info("Webhook set up successfully, starting update processing...")
+            
+            # Start processing updates
+            loop.run_until_complete(telegram_app.start())
+            logger.info("Telegram app started successfully, entering event loop...")
+            
+            # Keep the loop running to process updates
+            loop.run_forever()
+        except Exception as e:
+            logger.error(f"Error in Telegram setup thread: {e}", exc_info=True)
     
     # Start webhook setup in background
     setup_thread = threading.Thread(target=run_telegram_setup)
@@ -1205,7 +1226,10 @@ def create_telegram_app():
 
 # Initialize Telegram app when module is imported (needed for gunicorn)
 # This ensures telegram_app is initialized even when running with gunicorn
-initialize_telegram_app()
+try:
+    initialize_telegram_app()
+except Exception as e:
+    logger.error(f"Failed to initialize Telegram app on module import: {e}", exc_info=True)
 
 if __name__ == '__main__':
     # Validate environment variables
