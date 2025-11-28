@@ -175,7 +175,7 @@ def get_main_menu_keyboard():
     """Create main menu keyboard"""
     keyboard = [
         [InlineKeyboardButton("✅ Проверить", callback_data="check_menu")],
-        [InlineKeyboardButton("➕ Добавить", callback_data="add_menu")]
+        [InlineKeyboardButton("➕ Добавить", callback_data="add_new")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -360,9 +360,7 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = (
         "➕ Добавление нового лида\n\n"
-        "Обязательные поля:\n"
-        "• Full Name (обязательно)\n"
-        "• Минимум одно из: Phone, Facebook Link, Telegram, Facebook Username, Facebook ID\n\n"
+
         "Выберите поле для заполнения:"
     )
     
@@ -382,9 +380,10 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
     if field_name == "phone":
         search_value = normalize_phone(search_value)
     
-        client = get_supabase_client()
-        if not client:
-            await update.message.reply_text(
+    # Get Supabase client (for all fields, not just phone)
+    client = get_supabase_client()
+    if not client:
+        await update.message.reply_text(
             "❌ Ошибка: Не удалось подключиться к базе данных.",
             reply_markup=get_main_menu_keyboard()
         )
@@ -416,10 +415,10 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
         else:
             message = "❌ Клиент не найден."
         
-            await update.message.reply_text(
+        await update.message.reply_text(
             message,
             reply_markup=get_main_menu_keyboard()
-            )
+        )
         
     except Exception as e:
         logger.error(f"Error checking by {field_name}: {e}", exc_info=True)
@@ -668,7 +667,7 @@ def create_telegram_app():
     telegram_app.add_handler(CommandHandler("cancel", cancel_command))
     
     # Add callback query handler for menu navigation buttons
-    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu)$"))
+    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu)$"))
     
     # Conversation handlers for checking
     check_telegram_conv = ConversationHandler(
