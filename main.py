@@ -315,8 +315,8 @@ def get_add_field_keyboard(user_id: int):
     fullname_status = "🟢" if user_data.get('fullname') else "⚪"
     manager_status = "🟢" if user_data.get('manager_name') else "⚪"
     
-    keyboard.append([InlineKeyboardButton(f"{fullname_status} * Full Name", callback_data="add_field_fullname")])
-    keyboard.append([InlineKeyboardButton(f"{manager_status} * Manager Name", callback_data="add_field_manager")])
+    keyboard.append([InlineKeyboardButton(f"{fullname_status} Имя Фамилия *", callback_data="add_field_fullname")])
+    keyboard.append([InlineKeyboardButton(f"{manager_status} Агент *", callback_data="add_field_manager")])
     
     # Обязательные идентификаторы (минимум один) - серый круг по умолчанию, зеленый круг когда заполнено
     phone_status = "🟢" if user_data.get('phone') else "⚪"
@@ -447,11 +447,6 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = (
         "➕ Добавление нового лида\n\n"
-        "Обязательные поля:\n"
-        "• * Full Name\n"
-        "• * Manager Name\n"
-        "• Минимум одно из: Phone, Facebook Link, Telegram, Facebook Username, Facebook ID\n\n"
-        "Выберите поле для заполнения:"
     )
     
     await query.edit_message_text(message, reply_markup=get_add_field_keyboard(user_id))
