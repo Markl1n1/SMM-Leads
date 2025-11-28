@@ -36,10 +36,17 @@ def get_supabase_client():
                 logger.error("SUPABASE_KEY not found in environment variables")
                 return None
             
+            if not SUPABASE_URL:
+                logger.error("SUPABASE_URL not found in environment variables")
+                return None
+            
+            # Try to create client - use simple creation to avoid proxy parameter issues
+            # The proxy error occurs due to dependency conflicts, so we use the simplest approach
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            
             logger.info("Supabase client initialized successfully")
         except Exception as e:
-            logger.error(f"Error initializing Supabase client: {e}")
+            logger.error(f"Error initializing Supabase client: {e}", exc_info=True)
             return None
     return supabase
 
@@ -144,14 +151,24 @@ def get_add_field_keyboard(user_id: int):
 # Command handlers
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command - show main menu"""
-    welcome_message = (
-        "👋 Добро пожаловать в ClientsBot!\n\n"
-        "Выберите действие:"
-    )
-    await update.message.reply_text(
-        welcome_message,
-        reply_markup=get_main_menu_keyboard()
-    )
+    try:
+        welcome_message = (
+            "👋 Добро пожаловать в ClientsBot!\n\n"
+            "Выберите действие:"
+        )
+        await update.message.reply_text(
+            welcome_message,
+            reply_markup=get_main_menu_keyboard()
+        )
+        logger.info(f"Start command processed for user {update.effective_user.id}")
+    except Exception as e:
+        logger.error(f"Error in start_command: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(
+                "❌ Произошла ошибка при обработке команды. Попробуйте позже."
+            )
+        except:
+            pass
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
@@ -174,12 +191,11 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_id in user_data_store:
         del user_data_store[user_id]
-    
-    await update.message.reply_text(
-        "❌ Операция отменена.",
-        reply_markup=get_main_menu_keyboard()
-    )
-    return ConversationHandler.END
+        await update.message.reply_text(
+            "❌ Операция отменена.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
 
 # Callback query handlers
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -506,11 +522,16 @@ def webhook():
     """Handle incoming Telegram updates via webhook"""
     try:
         json_data = request.get_json()
-        update = Update.de_json(json_data, telegram_app.bot)
-        telegram_app.update_queue.put(update)
+        if json_data:
+            logger.info(f"Received webhook update: {json_data.get('update_id', 'unknown')}")
+            update = Update.de_json(json_data, telegram_app.bot)
+            telegram_app.update_queue.put(update)
+            logger.info(f"Update queued successfully: {update.update_id}")
+        else:
+            logger.warning("Received empty webhook request")
         return "OK", 200
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
+        logger.error(f"Error processing webhook: {e}", exc_info=True)
         return "Error", 500
 
 async def setup_webhook():
@@ -545,30 +566,35 @@ def create_telegram_app():
         entry_points=[CallbackQueryHandler(check_telegram_callback, pattern="^check_telegram$")],
         states={CHECK_BY_TELEGRAM: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_telegram_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     check_fb_link_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_link_callback, pattern="^check_fb_link$")],
         states={CHECK_BY_FB_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_link_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     check_fb_username_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_username_callback, pattern="^check_fb_username$")],
         states={CHECK_BY_FB_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_username_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     check_fb_id_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_id_callback, pattern="^check_fb_id$")],
         states={CHECK_BY_FB_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_id_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     check_phone_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_phone_callback, pattern="^check_phone$")],
         states={CHECK_BY_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_phone_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     # Conversation handler for adding
@@ -599,6 +625,7 @@ def create_telegram_app():
             ADD_MANAGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
         },
         fallbacks=[CommandHandler("cancel", cancel_command)],
+        per_message=False,
     )
     
     # Register all handlers
@@ -633,8 +660,9 @@ if __name__ == '__main__':
         logger.error("Please set all required environment variables in Koyeb dashboard")
         exit(1)
     
-    # Initialize Supabase client
-    get_supabase_client()
+    # Note: Supabase client will be initialized lazily on first use
+    # This prevents startup errors if there are dependency conflicts
+    logger.info("Supabase client will be initialized on first use")
     
     # Create Telegram app
     create_telegram_app()
