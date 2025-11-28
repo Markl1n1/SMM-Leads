@@ -275,9 +275,9 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
     if field_name == "phone":
         search_value = normalize_phone(search_value)
     
-    client = get_supabase_client()
-    if not client:
-        await update.message.reply_text(
+        client = get_supabase_client()
+        if not client:
+            await update.message.reply_text(
             "❌ Ошибка: Не удалось подключиться к базе данных.",
             reply_markup=get_main_menu_keyboard()
         )
@@ -309,11 +309,11 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
         else:
             message = "❌ Клиент не найден."
         
-        await update.message.reply_text(
+            await update.message.reply_text(
             message,
             reply_markup=get_main_menu_keyboard()
-        )
-    
+            )
+        
     except Exception as e:
         logger.error(f"Error checking by {field_name}: {e}", exc_info=True)
         await update.message.reply_text(
@@ -545,35 +545,30 @@ def create_telegram_app():
         entry_points=[CallbackQueryHandler(check_telegram_callback, pattern="^check_telegram$")],
         states={CHECK_BY_TELEGRAM: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_telegram_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     check_fb_link_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_link_callback, pattern="^check_fb_link$")],
         states={CHECK_BY_FB_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_link_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     check_fb_username_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_username_callback, pattern="^check_fb_username$")],
         states={CHECK_BY_FB_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_username_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     check_fb_id_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_fb_id_callback, pattern="^check_fb_id$")],
         states={CHECK_BY_FB_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_fb_id_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     check_phone_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_phone_callback, pattern="^check_phone$")],
         states={CHECK_BY_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_phone_input)]},
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     # Conversation handler for adding
@@ -604,7 +599,6 @@ def create_telegram_app():
             ADD_MANAGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
         },
         fallbacks=[CommandHandler("cancel", cancel_command)],
-        per_message=True,
     )
     
     # Register all handlers
