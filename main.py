@@ -4,19 +4,69 @@ import os
 os.environ.setdefault("NO_PROXY", "*")
 os.environ.setdefault("HTTPX_NO_PROXY", "1")
 
+# DEBUG: Configure logging early to capture all debug info
 import logging
-from datetime import datetime
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
-from supabase import create_client, Client
-
-# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# DEBUG: Log proxy-related environment variables
+proxy_env_vars = {
+    'NO_PROXY': os.environ.get('NO_PROXY'),
+    'HTTPX_NO_PROXY': os.environ.get('HTTPX_NO_PROXY'),
+    'HTTP_PROXY': os.environ.get('HTTP_PROXY'),
+    'HTTPS_PROXY': os.environ.get('HTTPS_PROXY'),
+    'http_proxy': os.environ.get('http_proxy'),
+    'https_proxy': os.environ.get('https_proxy'),
+}
+logger.info(f"DEBUG: Proxy environment variables: {proxy_env_vars}")
+
+# DEBUG: Try to monkeypatch httpx.Client to intercept proxy argument
+try:
+    import httpx
+    logger.info(f"DEBUG: httpx version: {httpx.__version__}")
+    
+    # Store original Client.__init__
+    original_httpx_client_init = httpx.Client.__init__
+    
+    def patched_httpx_client_init(self, *args, **kwargs):
+        """Patched httpx.Client.__init__ to remove proxy argument"""
+        if 'proxy' in kwargs:
+            logger.warning(f"DEBUG: httpx.Client.__init__ called with proxy={kwargs['proxy']}, removing it")
+            kwargs.pop('proxy')
+        return original_httpx_client_init(self, *args, **kwargs)
+    
+    # Apply monkeypatch
+    httpx.Client.__init__ = patched_httpx_client_init
+    logger.info("DEBUG: httpx.Client monkeypatch applied successfully")
+except Exception as e:
+    logger.warning(f"DEBUG: Failed to apply httpx.Client monkeypatch: {e}")
+
+from datetime import datetime
+from flask import Flask, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+
+# DEBUG: Log versions before importing supabase
+try:
+    import importlib.metadata
+    try:
+        supabase_version = importlib.metadata.version('supabase')
+        logger.info(f"DEBUG: supabase version: {supabase_version}")
+    except:
+        logger.warning("DEBUG: Could not get supabase version")
+    
+    try:
+        httpx_version = importlib.metadata.version('httpx')
+        logger.info(f"DEBUG: httpx version (from metadata): {httpx_version}")
+    except:
+        logger.warning("DEBUG: Could not get httpx version from metadata")
+except:
+    logger.warning("DEBUG: Could not import importlib.metadata")
+
+from supabase import create_client, Client
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -37,6 +87,8 @@ def get_supabase_client():
     global supabase
     if supabase is None:
         try:
+            logger.info("DEBUG: Starting Supabase client initialization...")
+            
             if not SUPABASE_KEY:
                 logger.error("SUPABASE_KEY not found in environment variables")
                 return None
@@ -45,10 +97,45 @@ def get_supabase_client():
                 logger.error("SUPABASE_URL not found in environment variables")
                 return None
             
+            logger.info(f"DEBUG: SUPABASE_URL={SUPABASE_URL[:20]}... (truncated)")
+            logger.info(f"DEBUG: SUPABASE_KEY length={len(SUPABASE_KEY) if SUPABASE_KEY else 0}")
+            
+            # DEBUG: Check current environment variables again
+            proxy_env_vars = {
+                'NO_PROXY': os.environ.get('NO_PROXY'),
+                'HTTPX_NO_PROXY': os.environ.get('HTTPX_NO_PROXY'),
+            }
+            logger.info(f"DEBUG: Proxy env vars at client creation: {proxy_env_vars}")
+            
+            # DEBUG: Try to inspect what create_client will do
+            logger.info("DEBUG: Calling create_client()...")
+            
             # Create Supabase client - environment variables are set at module level to prevent proxy issues
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            
+            logger.info("DEBUG: Supabase client created successfully")
             logger.info("Supabase client initialized successfully")
+        except TypeError as e:
+            error_msg = str(e)
+            logger.error(f"DEBUG: TypeError in get_supabase_client: {error_msg}")
+            logger.error(f"DEBUG: Error type: {type(e)}")
+            logger.error(f"DEBUG: Error args: {e.args}")
+            if "proxy" in error_msg.lower():
+                logger.error("DEBUG: Proxy-related error detected!")
+                logger.error("DEBUG: Attempting to check httpx.Client signature...")
+                try:
+                    import inspect
+                    import httpx
+                    sig = inspect.signature(httpx.Client.__init__)
+                    logger.error(f"DEBUG: httpx.Client.__init__ signature: {sig}")
+                    logger.error(f"DEBUG: httpx.Client.__init__ parameters: {list(sig.parameters.keys())}")
+                except Exception as inspect_error:
+                    logger.error(f"DEBUG: Could not inspect httpx.Client: {inspect_error}")
+            logger.error(f"Error initializing Supabase client: {e}", exc_info=True)
+            return None
         except Exception as e:
+            logger.error(f"DEBUG: Unexpected exception type: {type(e)}")
+            logger.error(f"DEBUG: Exception message: {str(e)}")
             logger.error(f"Error initializing Supabase client: {e}", exc_info=True)
             return None
     return supabase
