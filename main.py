@@ -419,7 +419,7 @@ def get_navigation_keyboard(is_optional: bool = False, show_back: bool = True) -
     EDIT_TELEGRAM_NAME,
     EDIT_TELEGRAM_ID,
     EDIT_MANAGER_NAME
-) = range(22)
+) = range(23)
 
 # Store user data during conversation
 user_data_store = {}
