@@ -1156,10 +1156,17 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_field'] = next_field
         context.user_data['current_state'] = next_state
         
-        await update.message.reply_text(
-            message,
-            reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True)
-        )
+        # Работаем как с message, так и с callback_query
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True)
+            )
+        elif update.message:
+            await update.message.reply_text(
+                message,
+                reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True)
+            )
         return next_state
 
 async def show_add_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1194,11 +1201,19 @@ async def show_add_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ Отменить", callback_data="add_cancel")]
     ]
     
-    await update.message.reply_text(
-        message,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
-    )
+    # Работаем как с message, так и с callback_query
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
+    elif update.message:
+        await update.message.reply_text(
+            message,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
 
 # Specific field callbacks
 async def add_field_fullname_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1316,7 +1331,6 @@ async def add_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if next_field == 'review':
         # Show review and save option
-        await query.edit_message_text("Переходим к проверке данных...")
         await show_add_review(update, context)
         return ADD_REVIEW
     else:
