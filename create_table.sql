@@ -18,15 +18,29 @@ CREATE TABLE IF NOT EXISTS facebook_leads (
     country TEXT,
     
     -- Автоматическая дата создания
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
-    
-    -- Ограничения для проверки уникальности
-    CONSTRAINT unique_phone UNIQUE (phone) WHERE phone IS NOT NULL AND phone != '',
-    CONSTRAINT unique_email UNIQUE (email) WHERE email IS NOT NULL AND email != '',
-    CONSTRAINT unique_facebook_link UNIQUE (facebook_link) WHERE facebook_link IS NOT NULL AND facebook_link != '',
-    CONSTRAINT unique_telegram_user UNIQUE (telegram_user) WHERE telegram_user IS NOT NULL AND telegram_user != '',
-    CONSTRAINT unique_telegram_id UNIQUE (telegram_id) WHERE telegram_id IS NOT NULL AND telegram_id != ''
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
 );
+
+-- Создание частичных уникальных индексов для проверки уникальности непустых значений
+-- Уникальный индекс для телефона (только для непустых значений)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_phone ON facebook_leads(phone) 
+    WHERE phone IS NOT NULL AND phone != '';
+
+-- Уникальный индекс для email (только для непустых значений)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_email ON facebook_leads(email) 
+    WHERE email IS NOT NULL AND email != '';
+
+-- Уникальный индекс для Facebook Link (только для непустых значений)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_facebook_link ON facebook_leads(facebook_link) 
+    WHERE facebook_link IS NOT NULL AND facebook_link != '';
+
+-- Уникальный индекс для Telegram User (только для непустых значений)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_telegram_user ON facebook_leads(telegram_user) 
+    WHERE telegram_user IS NOT NULL AND telegram_user != '';
+
+-- Уникальный индекс для Telegram ID (только для непустых значений)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_telegram_id ON facebook_leads(telegram_id) 
+    WHERE telegram_id IS NOT NULL AND telegram_id != '';
 
 -- Создание индексов для быстрого поиска
 -- Индекс для поиска по телефону (частичный поиск по последним цифрам)
