@@ -160,12 +160,12 @@ import re
 from urllib.parse import urlparse, parse_qs
 
 def validate_phone(phone: str) -> tuple[bool, str, str]:
-    """Validate phone number: minimum 7 digits, maximum 15 digits"""
+    """Validate phone number: minimum 10 digits, maximum 15 digits (with country code)"""
     normalized = normalize_phone(phone)
     if not normalized:
         return False, "Номер телефона не может быть пустым", ""
-    if len(normalized) < 7:
-        return False, "Номер телефона должен содержать минимум 7 цифр", ""
+    if len(normalized) < 10:
+        return False, "Номер телефона должен содержать минимум 10 цифр (с кодом страны)", ""
     if len(normalized) > 15:
         return False, "Номер телефона не может содержать более 15 цифр", ""
     return True, "", normalized
@@ -189,19 +189,22 @@ def validate_facebook_id(fb_id: str) -> tuple[bool, str]:
 
 def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     """
-    Validate Facebook link and extract the part ending with id (subpage).
+    Validate Facebook link and extract username or profile.php?id= format.
     Supports various Facebook URL formats:
-    - https://www.facebook.com/profile.php?id=123456
-    - https://www.facebook.com/username
-    - https://www.facebook.com/profile/username
-    - https://www.facebook.com/people/First-Last/123456
-    - https://m.facebook.com/username
-    - facebook.com/username
+    - https://www.facebook.com/profile.php?id=123456 → profile.php?id=123456
+    - https://www.facebook.com/markl1n → markl1n
+    - https://www.facebook.com/profile/username → username
+    - https://m.facebook.com/username → username
+    - facebook.com/username → username
     """
     if not link:
         return False, "Facebook ссылка не может быть пустой", ""
     
     link_clean = link.strip()
+    
+    # Remove @ if present at the beginning
+    if link_clean.startswith('@'):
+        link_clean = link_clean[1:]
     
     # Check if it's a valid Facebook URL
     facebook_patterns = [
@@ -243,44 +246,150 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
             extracted = f"profile.php?id={id_part}"
             return True, "", extracted
     
-    # Extract the path part
+    # For username format: extract just the username (last part after /)
     # Remove query parameters if present
     if '?' in link_clean:
         link_clean = link_clean.split('?')[0]
     
+    # Remove trailing slash
+    link_clean = link_clean.rstrip('/')
+    
+    # Extract username (last part after /)
     parts = link_clean.split('/')
     if len(parts) > 0:
-        # Get the last part (usually the id or username)
-        extracted = parts[-1]
-        # If there's a part before that, include it to get the full path
-        if len(parts) > 1:
-            # Include the path that leads to the id
-            extracted = '/'.join(parts)
-        return True, "", extracted
+        # Get the last non-empty part (username)
+        extracted = parts[-1] if parts[-1] else (parts[-2] if len(parts) > 1 else "")
+        if extracted:
+            return True, "", extracted
     
     return False, "Неверный формат Facebook ссылки", ""
 
-def validate_telegram_user(tg_user: str) -> tuple[bool, str, str]:
-    """Validate Telegram username: remove @ if present, check not empty"""
-    if not tg_user:
-        return False, "Telegram username не может быть пустым", ""
-    normalized = tg_user.strip()
+def validate_telegram_name(tg_name: str) -> tuple[bool, str, str]:
+    """Validate Telegram name: remove @ if present, check not empty"""
+    if not tg_name:
+        return False, "Telegram Name не может быть пустым", ""
+    normalized = tg_name.strip()
     if normalized.startswith('@'):
         normalized = normalized[1:]
     if not normalized:
-        return False, "Telegram username не может быть пустым", ""
+        return False, "Telegram Name не может быть пустым", ""
     return True, "", normalized
 
-def validate_facebook_username(username: str) -> tuple[bool, str, str]:
-    """Validate Facebook username: remove @ if present"""
-    if not username:
-        return False, "Facebook username не может быть пустым", ""
-    normalized = username.strip()
-    if normalized.startswith('@'):
-        normalized = normalized[1:]
-    if not normalized:
-        return False, "Facebook username не может быть пустым", ""
-    return True, "", normalized
+def validate_telegram_id(tg_id: str) -> tuple[bool, str]:
+    """Validate Telegram ID: only digits, minimum 1 digit"""
+    if not tg_id:
+        return False, "Telegram ID не может быть пустым"
+    normalized = tg_id.strip()
+    if not normalized.isdigit():
+        return False, "Telegram ID должен содержать только цифры"
+    if len(normalized) < 1:
+        return False, "Telegram ID должен содержать минимум 1 цифру"
+    return True, ""
+
+def get_field_format_requirements(field_name: str) -> str:
+    """Get format requirements description for a field"""
+    requirements = {
+        'fullname': (
+            "⚠️ Требования к формату:\n"
+            "• Поле не может быть пустым"
+        ),
+        'manager_name': (
+            "⚠️ Требования к формату:\n"
+            "• Поле не может быть пустым"
+        ),
+        'phone': (
+            "⚠️ Требования к формату:\n"
+            "• Обязателен код страны\n"
+            "• Только цифры (без пробелов)\n"
+            "• Без знака '+' в начале\n"
+            "• От 10 до 15 цифр\n\n"
+            "Примеры: 79001234567, 380501234567"
+        ),
+        'facebook_link': (
+            "⚠️ Требования к формату:\n"
+            "• Должен быть валидной Facebook ссылкой\n"
+            "• Может быть полная ссылка или username\n\n"
+            "Примеры: https://www.facebook.com/username, facebook.com/username"
+        ),
+        'telegram_name': (
+            "⚠️ Требования к формату:\n"
+            "• Только текст (без @)\n"
+            "• Без пробелов\n\n"
+            "Примеры: username, myname"
+        ),
+        'telegram_id': (
+            "⚠️ Требования к формату:\n"
+            "• Только цифры (без букв и символов)\n"
+            "• Без пробелов\n"
+            "• Минимум 1 цифра\n\n"
+            "Примеры: 12345, 789, 999888777"
+        ),
+        'email': (
+            "⚠️ Требования к формату:\n"
+            "• Стандартный формат email\n\n"
+            "Примеры: user@example.com"
+        ),
+        'country': (
+            "⚠️ Требования к формату:\n"
+            "• Поле не может быть пустым"
+        )
+    }
+    return requirements.get(field_name, "")
+
+def get_field_label(field_name: str) -> str:
+    """Get Russian label for field"""
+    labels = {
+        'fullname': 'Имя Фамилия',
+        'manager_name': 'Агент',
+        'phone': 'Номер телефона',
+        'facebook_link': 'Facebook Link',
+        'telegram_name': 'Telegram Name',
+        'telegram_id': 'Telegram ID',
+        'email': 'Email',
+        'country': 'Country'
+    }
+    return labels.get(field_name, field_name)
+
+def get_next_add_field(current_field: str) -> tuple[str, int]:
+    """Get next field in the add flow"""
+    field_sequence = [
+        ('fullname', ADD_FULLNAME),
+        ('manager_name', ADD_MANAGER_NAME),
+        ('phone', ADD_PHONE),
+        ('facebook_link', ADD_FB_LINK),
+        ('telegram_name', ADD_TELEGRAM_NAME),
+        ('telegram_id', ADD_TELEGRAM_ID),
+        ('email', ADD_EMAIL),
+        ('country', ADD_COUNTRY),
+    ]
+    
+    if not current_field:
+        return field_sequence[0]
+    
+    for i, (field, state) in enumerate(field_sequence):
+        if field == current_field:
+            if i + 1 < len(field_sequence):
+                return field_sequence[i + 1]
+            else:
+                return ('review', ADD_REVIEW)
+    
+    return field_sequence[0]
+
+def get_navigation_keyboard(is_optional: bool = False, show_back: bool = True) -> InlineKeyboardMarkup:
+    """Get navigation keyboard for field input"""
+    keyboard = []
+    
+    if is_optional:
+        keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="add_skip")])
+    
+    if show_back:
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="add_back")])
+    
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+    
+    return InlineKeyboardMarkup(keyboard)
+
+# Facebook username validation removed - using only Facebook Link now
 
 # Conversation states
 (
@@ -291,27 +400,25 @@ def validate_facebook_username(username: str) -> tuple[bool, str, str]:
     CHECK_BY_FB_ID,
     CHECK_BY_PHONE,
     CHECK_BY_FULLNAME,
-    # Add states
-    ADD_MENU,
+    # Add states (sequential flow)
     ADD_FULLNAME,
+    ADD_MANAGER_NAME,
     ADD_PHONE,
+    ADD_FB_LINK,
+    ADD_TELEGRAM_NAME,
+    ADD_TELEGRAM_ID,
     ADD_EMAIL,
     ADD_COUNTRY,
-    ADD_FB_ID,
-    ADD_FB_USERNAME,
-    ADD_FB_LINK,
-    ADD_TELEGRAM_USER,
-    ADD_MANAGER_NAME,
+    ADD_REVIEW,  # Review before saving
     # Edit states
     EDIT_MENU,
     EDIT_FULLNAME,
     EDIT_PHONE,
     EDIT_EMAIL,
     EDIT_COUNTRY,
-    EDIT_FB_ID,
-    EDIT_FB_USERNAME,
     EDIT_FB_LINK,
-    EDIT_TELEGRAM_USER,
+    EDIT_TELEGRAM_NAME,
+    EDIT_TELEGRAM_ID,
     EDIT_MANAGER_NAME
 ) = range(26)
 
@@ -535,20 +642,28 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.edit_message_text("👤 Введите полное имя (или фамилию):")
     return CHECK_BY_FULLNAME
 
-# Add callback
+# Add callback - new sequential flow
 async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start adding new lead"""
+    """Start adding new lead - sequential flow"""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     user_data_store[user_id] = {}
+    user_data_store_access_time[user_id] = time.time()
+    context.user_data['current_field'] = 'fullname'
+    context.user_data['add_step'] = 0
     
-    message = (
-        "➕ Добавление нового лида\n\n"
+    # Start with first field: Full Name
+    field_label = get_field_label('fullname')
+    requirements = get_field_format_requirements('fullname')
+    
+    message = f"📝 Введите {field_label}:\n\n{requirements}"
+    
+    await query.edit_message_text(
+        message,
+        reply_markup=get_navigation_keyboard(is_optional=False, show_back=False)
     )
-    
-    await query.edit_message_text(message, reply_markup=get_add_field_keyboard(user_id))
-    return ADD_MENU
+    return ADD_FULLNAME
 
 # Universal check function
 async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, field_name: str, field_label: str, current_state: int):
@@ -618,7 +733,8 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             'facebook_id': 'Facebook ID',
             'facebook_username': 'Facebook Username',
             'facebook_link': 'Facebook Link',
-            'telegram_user': 'Telegram',
+            'telegram_name': 'Telegram Name',
+            'telegram_id': 'Telegram ID',
             'manager_name': 'Добавил',
             'created_at': 'Дата'
         }
@@ -734,7 +850,8 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'facebook_id': 'Facebook ID',
             'facebook_username': 'Facebook Username',
             'facebook_link': 'Facebook Link',
-            'telegram_user': 'Telegram',
+            'telegram_name': 'Telegram Name',
+            'telegram_id': 'Telegram ID',
             'manager_name': 'Добавил',
             'created_at': 'Дата'
         }
@@ -828,7 +945,7 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Check input handlers
 async def check_telegram_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await check_by_field(update, context, "telegram_user", "Telegram username", CHECK_BY_TELEGRAM)
+    return await check_by_field(update, context, "telegram_name", "Telegram Name", CHECK_BY_TELEGRAM)
 
 async def check_fb_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await check_by_field(update, context, "facebook_link", "Facebook Link", CHECK_BY_FB_LINK)
@@ -845,25 +962,7 @@ async def check_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_fullname_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await check_by_fullname(update, context)
 
-# Add field handlers
-async def add_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, field_name: str, field_label: str, next_state: int):
-    """Universal callback for field selection"""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    
-    # If field is already filled, ask if user wants to change it
-    if user_data_store.get(user_id, {}).get(field_name):
-        await query.edit_message_text(
-            f"📝 {field_label} уже заполнено: {user_data_store[user_id][field_name]}\n"
-            f"Введите новое значение или отправьте /skip чтобы оставить текущее:"
-        )
-    else:
-        await query.edit_message_text(f"📝 Введите {field_label}:")
-    
-    context.user_data['current_field'] = field_name
-    context.user_data['current_state'] = next_state
-    return next_state
+# Old add_field_callback removed - using sequential flow now
 
 def cleanup_user_data_store():
     """Clean up old entries from user_data_store to optimize memory"""
@@ -914,112 +1013,192 @@ async def check_duplicate_realtime(client, field_name: str, field_value: str) ->
         return True, ""  # On error, allow to continue (will be checked again on save)
 
 async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Universal handler for field input"""
+    """Universal handler for field input - sequential flow"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
     field_name = context.user_data.get('current_field')
+    current_state = context.user_data.get('current_state', ADD_FULLNAME)
     
     # Update access time
     user_data_store_access_time[user_id] = time.time()
     cleanup_user_data_store()
     
-    if text.lower() == '/skip':
-        # Skip this field
-        pass
-    elif field_name:
-        # Validate and normalize based on field type
-        validation_passed = False
-        normalized_value = text
-        
-        if field_name == 'phone':
-            is_valid, error_msg, normalized = validate_phone(text)
-            if is_valid:
-                validation_passed = True
-                normalized_value = normalized
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        elif field_name == 'email':
-            is_valid, error_msg = validate_email(text)
-            if is_valid:
-                validation_passed = True
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        elif field_name == 'facebook_id':
-            is_valid, error_msg = validate_facebook_id(text)
-            if is_valid:
-                validation_passed = True
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        elif field_name == 'facebook_link':
-            is_valid, error_msg, extracted = validate_facebook_link(text)
-            if is_valid:
-                validation_passed = True
-                normalized_value = extracted
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        elif field_name == 'telegram_user':
-            is_valid, error_msg, normalized = validate_telegram_user(text)
-            if is_valid:
-                validation_passed = True
-                normalized_value = normalized
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        elif field_name == 'facebook_username':
-            is_valid, error_msg, normalized = validate_facebook_username(text)
-            if is_valid:
-                validation_passed = True
-                normalized_value = normalized
-            else:
-                await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
+    if not field_name:
+        # Fallback: start from beginning
+        await update.message.reply_text(
+            "❌ Ошибка: поле не определено. Начинаем заново.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+    
+    # Validate and normalize based on field type
+    validation_passed = False
+    normalized_value = text
+    
+    if field_name == 'phone':
+        is_valid, error_msg, normalized = validate_phone(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = normalized
         else:
-            # For other fields (fullname, country, manager_name), just check not empty
-            if text:
-                validation_passed = True
-            else:
-                await update.message.reply_text(f"❌ Поле не может быть пустым.\n\nПопробуйте снова:")
-                return context.user_data.get('current_state', ADD_MENU)
-        
-        # Real-time duplicate check for critical fields
-        if validation_passed and normalized_value:
-            # Check duplicates for phone, email, facebook_id
-            if field_name in ['phone', 'email', 'facebook_id']:
-                client = get_supabase_client()
-                if client:
-                    is_unique, existing_fullname = await check_duplicate_realtime(client, field_name, normalized_value)
-                    if not is_unique:
-                        field_label = UNIQUENESS_FIELD_LABELS.get(field_name, field_name)
-                        await update.message.reply_text(
-                            f"⚠️ Внимание: {field_label} уже существует в базе.\n"
-                            f"Существующий лид: {existing_fullname}\n\n"
-                            f"Вы можете продолжить, но при сохранении будет ошибка."
-                        )
-                        # Still allow to continue, will be checked again on save
-        
-        # Save value only if validation passed
-        if validation_passed and normalized_value:
-            user_data_store[user_id][field_name] = normalized_value
+            field_label = get_field_label('phone')
+            requirements = get_field_format_requirements('phone')
+            await update.message.reply_text(
+                f"❌ {error_msg}\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True)
+            )
+            return current_state
     
-    # Show menu again
-    message = (
-        "➕ Добавление нового лида\n\n"
-        "Выберите поле для заполнения:"
+    elif field_name == 'email':
+        is_valid, error_msg = validate_email(text)
+        if is_valid:
+            validation_passed = True
+        else:
+            field_label = get_field_label('email')
+            requirements = get_field_format_requirements('email')
+            await update.message.reply_text(
+                f"❌ {error_msg}\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True)
+            )
+            return current_state
+    
+    elif field_name == 'facebook_link':
+        is_valid, error_msg, extracted = validate_facebook_link(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = extracted
+        else:
+            field_label = get_field_label('facebook_link')
+            requirements = get_field_format_requirements('facebook_link')
+            await update.message.reply_text(
+                f"❌ {error_msg}\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True)
+            )
+            return current_state
+    
+    elif field_name == 'telegram_name':
+        is_valid, error_msg, normalized = validate_telegram_name(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = normalized
+        else:
+            field_label = get_field_label('telegram_name')
+            requirements = get_field_format_requirements('telegram_name')
+            await update.message.reply_text(
+                f"❌ {error_msg}\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True)
+            )
+            return current_state
+    
+    elif field_name == 'telegram_id':
+        is_valid, error_msg = validate_telegram_id(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = text.strip()
+        else:
+            field_label = get_field_label('telegram_id')
+            requirements = get_field_format_requirements('telegram_id')
+            await update.message.reply_text(
+                f"❌ {error_msg}\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True)
+            )
+            return current_state
+    
+    else:
+        # For other fields (fullname, country, manager_name), just check not empty
+        if text:
+            validation_passed = True
+        else:
+            field_label = get_field_label(field_name)
+            requirements = get_field_format_requirements(field_name)
+            is_optional = field_name not in ['fullname', 'manager_name']
+            await update.message.reply_text(
+                f"❌ Поле не может быть пустым.\n\n📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=(field_name != 'fullname'))
+            )
+            return current_state
+    
+    # Real-time duplicate check for critical fields
+    if validation_passed and normalized_value:
+        # Check duplicates for phone, email
+        if field_name in ['phone', 'email']:
+            client = get_supabase_client()
+            if client:
+                is_unique, existing_fullname = await check_duplicate_realtime(client, field_name, normalized_value)
+                if not is_unique:
+                    field_label = UNIQUENESS_FIELD_LABELS.get(field_name, field_name)
+                    await update.message.reply_text(
+                        f"⚠️ Внимание: {field_label} уже существует в базе.\n"
+                        f"Существующий лид: {existing_fullname}\n\n"
+                        f"Вы можете продолжить, но при сохранении будет ошибка."
+                    )
+                    # Still allow to continue, will be checked again on save
+    
+    # Save value only if validation passed
+    if validation_passed and normalized_value:
+        user_data_store[user_id][field_name] = normalized_value
+    
+    # Move to next field
+    next_field, next_state = get_next_add_field(field_name)
+    
+    if next_field == 'review':
+        # Show review and save option
+        await show_add_review(update, context)
+        return ADD_REVIEW
+    else:
+        # Show next field
+        field_label = get_field_label(next_field)
+        requirements = get_field_format_requirements(next_field)
+        is_optional = next_field not in ['fullname', 'manager_name']
+        
+        message = f"📝 Введите {field_label}:\n\n{requirements}"
+        
+        context.user_data['current_field'] = next_field
+        context.user_data['current_state'] = next_state
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True)
+        )
+        return next_state
+
+async def show_add_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show review of entered data before saving"""
+    user_id = update.effective_user.id
+    user_data = user_data_store.get(user_id, {})
+    
+    message_parts = ["✅ Проверьте введенные данные:\n"]
+    
+    field_labels = {
+        'fullname': 'Имя Фамилия',
+        'manager_name': 'Агент',
+        'phone': 'Телефон',
+        'facebook_link': 'Facebook Link',
+        'telegram_name': 'Telegram Name',
+        'telegram_id': 'Telegram ID',
+        'email': 'Email',
+        'country': 'Country'
+    }
+    
+    for field_name, field_label in field_labels.items():
+        value = user_data.get(field_name)
+        if value:
+            escaped_value = escape_html(str(value))
+            message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
+    
+    message = "\n".join(message_parts)
+    
+    keyboard = [
+        [InlineKeyboardButton("💾 Сохранить", callback_data="add_save")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="add_back")],
+        [InlineKeyboardButton("❌ Отменить", callback_data="add_cancel")]
+    ]
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
     )
-    await update.message.reply_text(message, reply_markup=get_add_field_keyboard(user_id))
-    
-    # Return to menu state
-    return ADD_MENU
 
 # Specific field callbacks
 async def add_field_fullname_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1034,17 +1213,12 @@ async def add_field_email_callback(update: Update, context: ContextTypes.DEFAULT
 async def add_field_country_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await add_field_callback(update, context, 'country', 'Country', ADD_COUNTRY)
 
-async def add_field_fb_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await add_field_callback(update, context, 'facebook_id', 'Facebook ID', ADD_FB_ID)
-
-async def add_field_fb_username_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await add_field_callback(update, context, 'facebook_username', 'Facebook Username', ADD_FB_USERNAME)
+# Facebook ID and Username callbacks removed - using only Facebook Link now
 
 async def add_field_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await add_field_callback(update, context, 'facebook_link', 'Facebook Link', ADD_FB_LINK)
 
-async def add_field_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await add_field_callback(update, context, 'telegram_user', 'Telegram', ADD_TELEGRAM_USER)
+# Old telegram callback removed - using sequential flow now
 
 async def add_field_manager_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await add_field_callback(update, context, 'manager_name', 'Manager Name', ADD_MANAGER_NAME)
@@ -1054,9 +1228,9 @@ UNIQUENESS_FIELD_LABELS = {
     'phone': 'Номер телефона',
     'email': 'Email',
     'fullname': 'Имя',
-    'facebook_id': 'Facebook ID',
-    'facebook_username': 'Facebook Username',
-    'facebook_link': 'Facebook Link'
+    'facebook_link': 'Facebook Link',
+    'telegram_name': 'Telegram Name',
+    'telegram_id': 'Telegram ID'
 }
 
 def check_fields_uniqueness_batch(client, fields_to_check: dict) -> tuple[bool, str]:
@@ -1128,6 +1302,92 @@ def check_field_uniqueness(client, field_name: str, field_value: str) -> bool:
         # On error, assume not unique to prevent duplicate inserts
         return False
 
+async def add_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Skip current optional field"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    field_name = context.user_data.get('current_field')
+    current_state = context.user_data.get('current_state', ADD_FULLNAME)
+    
+    # Move to next field
+    next_field, next_state = get_next_add_field(field_name)
+    
+    if next_field == 'review':
+        # Show review and save option
+        await query.edit_message_text("Переходим к проверке данных...")
+        await show_add_review(update, context)
+        return ADD_REVIEW
+    else:
+        # Show next field
+        field_label = get_field_label(next_field)
+        requirements = get_field_format_requirements(next_field)
+        is_optional = next_field not in ['fullname', 'manager_name']
+        
+        message = f"📝 Введите {field_label}:\n\n{requirements}"
+        
+        context.user_data['current_field'] = next_field
+        context.user_data['current_state'] = next_state
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True)
+        )
+        return next_state
+
+async def add_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Go back to previous field"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    field_name = context.user_data.get('current_field')
+    
+    # Get previous field
+    field_sequence = [
+        ('fullname', ADD_FULLNAME),
+        ('manager_name', ADD_MANAGER_NAME),
+        ('phone', ADD_PHONE),
+        ('facebook_link', ADD_FB_LINK),
+        ('telegram_name', ADD_TELEGRAM_NAME),
+        ('telegram_id', ADD_TELEGRAM_ID),
+        ('email', ADD_EMAIL),
+        ('country', ADD_COUNTRY),
+    ]
+    
+    prev_field = None
+    prev_state = ADD_FULLNAME
+    
+    for i, (field, state) in enumerate(field_sequence):
+        if field == field_name:
+            if i > 0:
+                prev_field, prev_state = field_sequence[i - 1]
+            break
+    
+    if prev_field:
+        field_label = get_field_label(prev_field)
+        requirements = get_field_format_requirements(prev_field)
+        is_optional = prev_field not in ['fullname', 'manager_name']
+        
+        message = f"📝 Введите {field_label}:\n\n{requirements}"
+        
+        context.user_data['current_field'] = prev_field
+        context.user_data['current_state'] = prev_state
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=(prev_field != 'fullname'))
+        )
+        return prev_state
+    else:
+        # Already at first field, go to main menu
+        await query.edit_message_text(
+            "👋 Главное меню\n\nВыберите действие:",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+
 async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Validate and save the lead"""
     query = update.callback_query
@@ -1137,33 +1397,41 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Validation
     if not user_data.get('fullname'):
+        field_label = get_field_label('fullname')
+        requirements = get_field_format_requirements('fullname')
         await query.edit_message_text(
-            "❌ Ошибка: Full Name обязателен для заполнения!\n\n"
-            "Выберите поле для заполнения:",
-            reply_markup=get_add_field_keyboard(user_id)
+            f"❌ Ошибка: {field_label} обязателен для заполнения!\n\n"
+            f"📝 Введите {field_label}:\n\n{requirements}",
+            reply_markup=get_navigation_keyboard(is_optional=False, show_back=False)
         )
-        return ADD_MENU
+        context.user_data['current_field'] = 'fullname'
+        context.user_data['current_state'] = ADD_FULLNAME
+        return ADD_FULLNAME
     
     if not user_data.get('manager_name'):
+        field_label = get_field_label('manager_name')
+        requirements = get_field_format_requirements('manager_name')
         await query.edit_message_text(
-            "❌ Ошибка: Manager Name обязателен для заполнения!\n\n"
-            "Выберите поле для заполнения:",
-            reply_markup=get_add_field_keyboard(user_id)
+            f"❌ Ошибка: {field_label} обязателен для заполнения!\n\n"
+            f"📝 Введите {field_label}:\n\n{requirements}",
+            reply_markup=get_navigation_keyboard(is_optional=False, show_back=True)
         )
-        return ADD_MENU
+        context.user_data['current_field'] = 'manager_name'
+        context.user_data['current_state'] = ADD_MANAGER_NAME
+        return ADD_MANAGER_NAME
     
     # Check if at least one identifier is present
-    required_fields = ['phone', 'facebook_link', 'telegram_user', 'facebook_username', 'facebook_id']
+    required_fields = ['phone', 'facebook_link', 'telegram_name', 'telegram_id']
     has_identifier = any(user_data.get(field) for field in required_fields)
     
     if not has_identifier:
         await query.edit_message_text(
             "❌ Ошибка: Необходимо указать минимум одно из полей:\n"
-            "Phone, Facebook Link, Telegram, Facebook Username или Facebook ID!\n\n"
-            "Выберите поле для заполнения:",
-            reply_markup=get_add_field_keyboard(user_id)
+            "Phone, Facebook Link, Telegram Name или Telegram ID!\n\n"
+            "Начнем с первого опционального поля:",
+            reply_markup=get_main_menu_keyboard()
         )
-        return ADD_MENU
+        return ConversationHandler.END
     
     # Get Supabase client for uniqueness check
     client = get_supabase_client()
@@ -1178,7 +1446,7 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check uniqueness of fields - optimized batch check
     fields_to_check = {}
-    for field_name in ['phone', 'email', 'fullname', 'facebook_id', 'facebook_username', 'facebook_link']:
+    for field_name in ['phone', 'email', 'fullname', 'facebook_link', 'telegram_name', 'telegram_id']:
         field_value = user_data.get(field_name)
         if field_value and field_value.strip():  # Only check non-empty fields
             # Normalize phone if checking phone field
@@ -1192,25 +1460,69 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             field_label = UNIQUENESS_FIELD_LABELS.get(conflicting_field, conflicting_field)
             await query.edit_message_text(
                 f"❌ {field_label} уже существует в базе.\n\n"
-                "Выберите поле для заполнения:",
-                reply_markup=get_add_field_keyboard(user_id)
+                "Попробуйте добавить лид заново.",
+                reply_markup=get_main_menu_keyboard()
             )
-            return ADD_MENU
+            if user_id in user_data_store:
+                del user_data_store[user_id]
+            if user_id in user_data_store_access_time:
+                del user_data_store_access_time[user_id]
+            return ConversationHandler.END
     
     # All fields are unique, proceed with saving
     try:
-        # Normalize phone in user_data before saving if present
-        if 'phone' in user_data and user_data['phone']:
-            user_data['phone'] = normalize_phone(user_data['phone'])
+        # Prepare data for saving - map telegram_name to telegram_user for database compatibility
+        save_data = user_data.copy()
         
-        response = client.table(TABLE_NAME).insert(user_data).execute()
+        # Normalize phone in save_data before saving if present
+        if 'phone' in save_data and save_data['phone']:
+            save_data['phone'] = normalize_phone(save_data['phone'])
+        
+        # Map telegram_name to telegram_user for database (backward compatibility)
+        if 'telegram_name' in save_data:
+            save_data['telegram_user'] = save_data.pop('telegram_name')
+        
+        response = client.table(TABLE_NAME).insert(save_data).execute()
         
         if response.data:
+            # Show success message with entered data
+            message_parts = ["✅ Клиент успешно добавлен!\n"]
+            field_labels = {
+                'fullname': 'Имя Фамилия',
+                'manager_name': 'Агент',
+                'phone': 'Телефон',
+                'facebook_link': 'Facebook Link',
+                'telegram_name': 'Telegram Name',
+                'telegram_id': 'Telegram ID',
+                'email': 'Email',
+                'country': 'Country'
+            }
+            
+            for field_name, field_label in field_labels.items():
+                # Check telegram_user for display (it was mapped from telegram_name)
+                display_field = 'telegram_user' if field_name == 'telegram_name' else field_name
+                value = save_data.get(display_field) or user_data.get(field_name)
+                if value:
+                    escaped_value = escape_html(str(value))
+                    message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
+            
+            # Add date
+            from datetime import datetime
+            message_parts.append(f"Дата добавления: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
+            
+            message = "\n".join(message_parts)
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Добавить клиента", callback_data="add_new")],
+                [InlineKeyboardButton("🔍 Искать клиента", callback_data="check_menu")]
+            ]
+            
             await query.edit_message_text(
-                "✅ Клиент успешно добавлен!",
-                reply_markup=get_main_menu_keyboard()
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
             )
-            logger.info(f"Added new client: {user_data}")
+            logger.info(f"Added new client: {save_data}")
         else:
             await query.edit_message_text(
                 "❌ Ошибка: Данные не были сохранены. Попробуйте снова.",
@@ -1232,6 +1544,8 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Clean up
     if user_id in user_data_store:
         del user_data_store[user_id]
+    if user_id in user_data_store_access_time:
+        del user_data_store_access_time[user_id]
     
     return ConversationHandler.END
 
@@ -1280,7 +1594,12 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         user_id = query.from_user.id
         
         # Store lead data for editing
-        user_data_store[user_id] = lead.copy()
+        # Map telegram_user to telegram_name for consistency
+        lead_data = lead.copy()
+        if 'telegram_user' in lead_data and 'telegram_name' not in lead_data:
+            lead_data['telegram_name'] = lead_data.get('telegram_user')
+        
+        user_data_store[user_id] = lead_data
         user_data_store_access_time[user_id] = time.time()
         context.user_data['editing_lead_id'] = lead_id
         
@@ -1301,7 +1620,7 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         return ConversationHandler.END
 
 def get_edit_field_keyboard(user_id: int):
-    """Create keyboard for editing lead fields (similar to add menu)"""
+    """Create keyboard for editing lead fields"""
     user_data = user_data_store.get(user_id, {})
     keyboard = []
     
@@ -1315,15 +1634,15 @@ def get_edit_field_keyboard(user_id: int):
     # Identifier fields
     phone_status = "🟢" if user_data.get('phone') else "⚪"
     fb_link_status = "🟢" if user_data.get('facebook_link') else "⚪"
-    telegram_status = "🟢" if user_data.get('telegram_user') else "⚪"
-    fb_username_status = "🟢" if user_data.get('facebook_username') else "⚪"
-    fb_id_status = "🟢" if user_data.get('facebook_id') else "⚪"
+    # Check both telegram_user (old) and telegram_name (new)
+    telegram_name_value = user_data.get('telegram_name') or user_data.get('telegram_user')
+    telegram_name_status = "🟢" if telegram_name_value else "⚪"
+    telegram_id_status = "🟢" if user_data.get('telegram_id') else "⚪"
     
     keyboard.append([InlineKeyboardButton(f"{phone_status} Phone", callback_data="edit_field_phone")])
     keyboard.append([InlineKeyboardButton(f"{fb_link_status} Facebook Link", callback_data="edit_field_fb_link")])
-    keyboard.append([InlineKeyboardButton(f"{telegram_status} Telegram", callback_data="edit_field_telegram")])
-    keyboard.append([InlineKeyboardButton(f"{fb_username_status} Facebook Username", callback_data="edit_field_fb_username")])
-    keyboard.append([InlineKeyboardButton(f"{fb_id_status} Facebook ID", callback_data="edit_field_fb_id")])
+    keyboard.append([InlineKeyboardButton(f"{telegram_name_status} Telegram Name", callback_data="edit_field_telegram_name")])
+    keyboard.append([InlineKeyboardButton(f"{telegram_id_status} Telegram ID", callback_data="edit_field_telegram_id")])
     
     # Optional fields
     email_status = "🟢" if user_data.get('email') else "⚪"
@@ -1359,19 +1678,88 @@ async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     return next_state
 
 async def edit_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Universal handler for edit field input (reuses add_field_input logic)"""
-    # Reuse the same validation logic as add_field_input
-    result = await add_field_input(update, context)
-    
-    # If validation passed, show edit menu again
+    """Universal handler for edit field input"""
     user_id = update.effective_user.id
-    if user_id in user_data_store:
+    text = update.message.text.strip()
+    field_name = context.user_data.get('current_field')
+    
+    # Update access time
+    user_data_store_access_time[user_id] = time.time()
+    cleanup_user_data_store()
+    
+    if not field_name:
         await update.message.reply_text(
-            "✏️ Выберите поле для редактирования:",
-            reply_markup=get_edit_field_keyboard(user_id)
+            "❌ Ошибка: поле не определено.",
+            reply_markup=get_main_menu_keyboard()
         )
-        return EDIT_MENU
-    return result
+        return ConversationHandler.END
+    
+    # Validate and normalize based on field type (same logic as add_field_input)
+    validation_passed = False
+    normalized_value = text
+    
+    if field_name == 'phone':
+        is_valid, error_msg, normalized = validate_phone(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = normalized
+        else:
+            await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    elif field_name == 'email':
+        is_valid, error_msg = validate_email(text)
+        if is_valid:
+            validation_passed = True
+        else:
+            await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    elif field_name == 'facebook_link':
+        is_valid, error_msg, extracted = validate_facebook_link(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = extracted
+        else:
+            await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    elif field_name == 'telegram_name':
+        is_valid, error_msg, normalized = validate_telegram_name(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = normalized
+        else:
+            await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    elif field_name == 'telegram_id':
+        is_valid, error_msg = validate_telegram_id(text)
+        if is_valid:
+            validation_passed = True
+            normalized_value = text.strip()
+        else:
+            await update.message.reply_text(f"❌ {error_msg}\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    else:
+        # For other fields (fullname, country, manager_name), just check not empty
+        if text:
+            validation_passed = True
+        else:
+            await update.message.reply_text(f"❌ Поле не может быть пустым.\n\nПопробуйте снова:")
+            return context.user_data.get('current_state', EDIT_MENU)
+    
+    # Save value only if validation passed
+    if validation_passed and normalized_value:
+        user_data_store[user_id][field_name] = normalized_value
+    
+    # Show edit menu again
+    await update.message.reply_text(
+        "✏️ Выберите поле для редактирования:",
+        reply_markup=get_edit_field_keyboard(user_id)
+    )
+    return EDIT_MENU
 
 async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Save edited lead"""
@@ -1406,13 +1794,14 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return EDIT_MENU
     
     # Check if at least one identifier is present
-    required_fields = ['phone', 'facebook_link', 'telegram_user', 'facebook_username', 'facebook_id']
-    has_identifier = any(user_data.get(field) for field in required_fields)
+    required_fields = ['phone', 'facebook_link', 'telegram_name', 'telegram_id']
+    # Also check telegram_user for backward compatibility
+    has_identifier = any(user_data.get(field) for field in required_fields) or user_data.get('telegram_user')
     
     if not has_identifier:
         await query.edit_message_text(
             "❌ Ошибка: Необходимо указать минимум одно из полей:\n"
-            "Phone, Facebook Link, Telegram, Facebook Username или Facebook ID!\n\n"
+            "Phone, Facebook Link, Telegram Name или Telegram ID!\n\n"
             "Выберите поле для редактирования:",
             reply_markup=get_edit_field_keyboard(user_id)
         )
@@ -1437,6 +1826,10 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Normalize phone if present
     if 'phone' in update_data and update_data['phone']:
         update_data['phone'] = normalize_phone(update_data['phone'])
+    
+    # Map telegram_name to telegram_user for database (backward compatibility)
+    if 'telegram_name' in update_data:
+        update_data['telegram_user'] = update_data.pop('telegram_name')
     
     try:
         # Update lead in database
@@ -1508,17 +1901,16 @@ async def edit_field_email_callback(update: Update, context: ContextTypes.DEFAUL
 async def edit_field_country_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await edit_field_callback(update, context, 'country', 'Country', EDIT_COUNTRY)
 
-async def edit_field_fb_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await edit_field_callback(update, context, 'facebook_id', 'Facebook ID', EDIT_FB_ID)
-
-async def edit_field_fb_username_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await edit_field_callback(update, context, 'facebook_username', 'Facebook Username', EDIT_FB_USERNAME)
+# Facebook ID and Username callbacks removed - using only Facebook Link now
 
 async def edit_field_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await edit_field_callback(update, context, 'facebook_link', 'Facebook Link', EDIT_FB_LINK)
 
-async def edit_field_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await edit_field_callback(update, context, 'telegram_user', 'Telegram', EDIT_TELEGRAM_USER)
+async def edit_field_telegram_name_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await edit_field_callback(update, context, 'telegram_name', 'Telegram Name', EDIT_TELEGRAM_NAME)
+
+async def edit_field_telegram_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await edit_field_callback(update, context, 'telegram_id', 'Telegram ID', EDIT_TELEGRAM_ID)
 
 async def edit_field_manager_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await edit_field_callback(update, context, 'manager_name', 'Manager Name', EDIT_MANAGER_NAME)
@@ -1773,32 +2165,61 @@ def create_telegram_app():
         per_message=False,
     )
     
-    # Conversation handler for adding
+    # Conversation handler for adding - sequential flow
     add_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_new_callback, pattern="^add_new$")],
         states={
-            ADD_MENU: [
-                CallbackQueryHandler(add_field_fullname_callback, pattern="^add_field_fullname$"),
-                CallbackQueryHandler(add_field_phone_callback, pattern="^add_field_phone$"),
-                CallbackQueryHandler(add_field_fb_link_callback, pattern="^add_field_fb_link$"),
-                CallbackQueryHandler(add_field_telegram_callback, pattern="^add_field_telegram$"),
-                CallbackQueryHandler(add_field_fb_username_callback, pattern="^add_field_fb_username$"),
-                CallbackQueryHandler(add_field_fb_id_callback, pattern="^add_field_fb_id$"),
-                CallbackQueryHandler(add_field_email_callback, pattern="^add_field_email$"),
-                CallbackQueryHandler(add_field_country_callback, pattern="^add_field_country$"),
-                CallbackQueryHandler(add_field_manager_callback, pattern="^add_field_manager$"),
-                CallbackQueryHandler(add_save_callback, pattern="^add_save$"),
+            ADD_FULLNAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
                 CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
             ],
-            ADD_FULLNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_FB_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_FB_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_FB_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_TELEGRAM_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
-            ADD_MANAGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input)],
+            ADD_MANAGER_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_FB_LINK: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_TELEGRAM_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_TELEGRAM_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_EMAIL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_COUNTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
+            ADD_REVIEW: [
+                CallbackQueryHandler(add_save_callback, pattern="^add_save$"),
+                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            ],
         },
         fallbacks=[CommandHandler("q", quit_command)],
         per_message=False,
@@ -1820,10 +2241,9 @@ def create_telegram_app():
             CallbackQueryHandler(edit_field_phone_callback, pattern="^edit_field_phone$"),
             CallbackQueryHandler(edit_field_email_callback, pattern="^edit_field_email$"),
             CallbackQueryHandler(edit_field_country_callback, pattern="^edit_field_country$"),
-            CallbackQueryHandler(edit_field_fb_id_callback, pattern="^edit_field_fb_id$"),
-            CallbackQueryHandler(edit_field_fb_username_callback, pattern="^edit_field_fb_username$"),
             CallbackQueryHandler(edit_field_fb_link_callback, pattern="^edit_field_fb_link$"),
-            CallbackQueryHandler(edit_field_telegram_callback, pattern="^edit_field_telegram$"),
+            CallbackQueryHandler(edit_field_telegram_name_callback, pattern="^edit_field_telegram_name$"),
+            CallbackQueryHandler(edit_field_telegram_id_callback, pattern="^edit_field_telegram_id$"),
             CallbackQueryHandler(edit_field_manager_callback, pattern="^edit_field_manager$"),
             CallbackQueryHandler(edit_save_callback, pattern="^edit_save$"),
             CallbackQueryHandler(edit_cancel_callback, pattern="^edit_cancel$"),
@@ -1834,10 +2254,9 @@ def create_telegram_app():
                 CallbackQueryHandler(edit_field_phone_callback, pattern="^edit_field_phone$"),
                 CallbackQueryHandler(edit_field_email_callback, pattern="^edit_field_email$"),
                 CallbackQueryHandler(edit_field_country_callback, pattern="^edit_field_country$"),
-                CallbackQueryHandler(edit_field_fb_id_callback, pattern="^edit_field_fb_id$"),
-                CallbackQueryHandler(edit_field_fb_username_callback, pattern="^edit_field_fb_username$"),
                 CallbackQueryHandler(edit_field_fb_link_callback, pattern="^edit_field_fb_link$"),
-                CallbackQueryHandler(edit_field_telegram_callback, pattern="^edit_field_telegram$"),
+                CallbackQueryHandler(edit_field_telegram_name_callback, pattern="^edit_field_telegram_name$"),
+                CallbackQueryHandler(edit_field_telegram_id_callback, pattern="^edit_field_telegram_id$"),
                 CallbackQueryHandler(edit_field_manager_callback, pattern="^edit_field_manager$"),
                 CallbackQueryHandler(edit_save_callback, pattern="^edit_save$"),
                 CallbackQueryHandler(edit_cancel_callback, pattern="^edit_cancel$"),
@@ -1846,10 +2265,9 @@ def create_telegram_app():
             EDIT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
             EDIT_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
             EDIT_COUNTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
-            EDIT_FB_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
-            EDIT_FB_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
             EDIT_FB_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
-            EDIT_TELEGRAM_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
+            EDIT_TELEGRAM_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
+            EDIT_TELEGRAM_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
             EDIT_MANAGER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_field_input)],
         },
         fallbacks=[CommandHandler("q", quit_command)],
