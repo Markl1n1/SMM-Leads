@@ -189,9 +189,10 @@ def validate_facebook_id(fb_id: str) -> tuple[bool, str]:
 
 def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     """
-    Validate Facebook link and extract username or profile.php?id= format.
+    Validate Facebook link and extract username or ID.
     Supports various Facebook URL formats:
-    - https://www.facebook.com/profile.php?id=123456 → profile.php?id=123456
+    - https://www.facebook.com/profile.php?id=123456 → 123456 (only ID)
+    - https://www.facebook.com/profile.php?id=123456&ref=... → 123456 (only ID)
     - https://www.facebook.com/markl1n → markl1n
     - https://www.facebook.com/profile/username → username
     - https://m.facebook.com/username → username
@@ -238,18 +239,39 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     elif link_clean.lower().startswith('m.facebook.com/'):
         link_clean = link_clean[15:]
     
-    # Handle profile.php?id= format
-    if 'profile.php' in link_clean:
-        # Extract ID from query string
-        if 'id=' in link_clean:
-            id_part = link_clean.split('id=')[-1].split('&')[0]
-            extracted = f"profile.php?id={id_part}"
-            return True, "", extracted
+    # Handle profile.php?id= format or any link with id= parameter - extract ONLY the ID number
+    if 'id=' in link_clean:
+        # Extract ID from query string - look for id= parameter
+        # Handle cases like:
+        # - profile.php?id=123456
+        # - profile.php?id=123456&ref=...
+        # - ?id=123456 (without profile.php)
+        # - /people/Name/123456 (alternative format)
+        id_part = link_clean.split('id=')[-1].split('&')[0].split('#')[0].strip()
+        # Also check for alternative format: /people/Name/123456
+        if not id_part.isdigit() and '/' in link_clean:
+            # Try to extract ID from path like /people/Name/123456
+            path_parts = link_clean.split('/')
+            for part in reversed(path_parts):
+                if part.isdigit() and len(part) > 5:  # Facebook IDs are usually long numbers
+                    id_part = part
+                    break
+        
+        # Validate that ID contains only digits
+        if id_part.isdigit():
+            # Return ONLY the ID number, not profile.php?id=...
+            return True, "", id_part
+        else:
+            return False, "Facebook ID должен содержать только цифры", ""
     
     # For username format: extract just the username (last part after /)
     # Remove query parameters if present
     if '?' in link_clean:
         link_clean = link_clean.split('?')[0]
+    
+    # Remove hash fragments if present
+    if '#' in link_clean:
+        link_clean = link_clean.split('#')[0]
     
     # Remove trailing slash
     link_clean = link_clean.rstrip('/')
@@ -379,13 +401,19 @@ def get_navigation_keyboard(is_optional: bool = False, show_back: bool = True) -
     """Get navigation keyboard for field input"""
     keyboard = []
     
+    # Кнопка "Пропустить" сверху на 100% ширины (если поле опциональное)
     if is_optional:
         keyboard.append([InlineKeyboardButton("⏭️ Пропустить", callback_data="add_skip")])
     
+    # Кнопки "Назад" и "Главное меню" в один ряд (по 50% каждая)
     if show_back:
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="add_back")])
-    
-    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+        keyboard.append([
+            InlineKeyboardButton("◀️ Назад", callback_data="add_back"),
+            InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")
+        ])
+    else:
+        # Если кнопка "Назад" не нужна, только "Главное меню" на 100%
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
     
     return InlineKeyboardMarkup(keyboard)
 
