@@ -396,13 +396,15 @@ def validate_telegram_name(tg_name: str) -> tuple[bool, str, str]:
     return True, "", normalized
 
 def validate_telegram_id(tg_id: str) -> tuple[bool, str, str]:
-    """Validate Telegram ID: extract only digits, minimum 1 digit"""
+    """Validate Telegram ID: must contain only digits"""
     if not tg_id:
         return False, "Telegram ID не может быть пустым", ""
-    # Normalize: extract only digits
+    # Check that input contains only digits
+    if not tg_id.isdigit():
+        return False, "Telegram ID должен содержать только цифры", ""
     normalized = normalize_telegram_id(tg_id)
     if not normalized:
-        return False, "Telegram ID должен содержать хотя бы одну цифру", ""
+        return False, "Telegram ID не может быть пустым", ""
     return True, "", normalized
 
 def get_field_format_requirements(field_name: str) -> str:
@@ -2180,8 +2182,32 @@ async def edit_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     field_name = context.user_data.get('current_field')
     
-    # Update access time
+    # Update access time BEFORE cleanup to prevent deletion
     user_data_store_access_time[user_id] = time.time()
+    
+    # Ensure user_data_store entry exists before cleanup
+    if user_id not in user_data_store:
+        # Re-initialize from database if missing
+        lead_id = context.user_data.get('editing_lead_id')
+        if lead_id:
+            client = get_supabase_client()
+            if client:
+                try:
+                    response = client.table(TABLE_NAME).select("*").eq("id", lead_id).execute()
+                    if response.data and len(response.data) > 0:
+                        lead = response.data[0]
+                        lead_data = lead.copy()
+                        if 'telegram_user' in lead_data and lead_data.get('telegram_user'):
+                            if 'telegram_name' not in lead_data or not lead_data.get('telegram_name'):
+                                lead_data['telegram_name'] = lead_data.get('telegram_user')
+                        for field in ['fullname', 'manager_name', 'phone', 'facebook_link', 'telegram_name', 'telegram_id']:
+                            if field not in lead_data:
+                                lead_data[field] = None
+                        user_data_store[user_id] = lead_data
+                        user_data_store_access_time[user_id] = time.time()
+                except Exception as e:
+                    logger.error(f"Error reloading lead data: {e}", exc_info=True)
+    
     cleanup_user_data_store()
     
     if not field_name:
@@ -2190,6 +2216,10 @@ async def edit_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_menu_keyboard()
         )
         return ConversationHandler.END
+    
+    # Ensure user_data_store[user_id] exists
+    if user_id not in user_data_store:
+        user_data_store[user_id] = {}
     
     # Validate and normalize based on field type (same logic as add_field_input)
     validation_passed = False
@@ -2247,7 +2277,12 @@ async def edit_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Save value only if validation passed
     if validation_passed and normalized_value:
+        # Ensure user_data_store[user_id] exists before assignment
+        if user_id not in user_data_store:
+            user_data_store[user_id] = {}
         user_data_store[user_id][field_name] = normalized_value
+        # Update access time after saving
+        user_data_store_access_time[user_id] = time.time()
     
     # Show edit menu again
     await update.message.reply_text(
@@ -2261,7 +2296,6 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    user_data = user_data_store.get(user_id, {})
     lead_id = context.user_data.get('editing_lead_id')
     
     if not lead_id:
@@ -2270,6 +2304,28 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=get_main_menu_keyboard()
         )
         return ConversationHandler.END
+    
+    # Ensure user_data_store exists and reload if missing
+    if user_id not in user_data_store:
+        client = get_supabase_client()
+        if client:
+            try:
+                response = client.table(TABLE_NAME).select("*").eq("id", lead_id).execute()
+                if response.data and len(response.data) > 0:
+                    lead = response.data[0]
+                    lead_data = lead.copy()
+                    if 'telegram_user' in lead_data and lead_data.get('telegram_user'):
+                        if 'telegram_name' not in lead_data or not lead_data.get('telegram_name'):
+                            lead_data['telegram_name'] = lead_data.get('telegram_user')
+                    for field in ['fullname', 'manager_name', 'phone', 'facebook_link', 'telegram_name', 'telegram_id']:
+                        if field not in lead_data:
+                            lead_data[field] = None
+                    user_data_store[user_id] = lead_data
+                    user_data_store_access_time[user_id] = time.time()
+            except Exception as e:
+                logger.error(f"Error reloading lead data in save: {e}", exc_info=True)
+    
+    user_data = user_data_store.get(user_id, {})
     
     # Validation (same as add_save_callback)
     # Check if fullname is empty or None
