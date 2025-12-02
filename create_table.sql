@@ -13,9 +13,6 @@ CREATE TABLE IF NOT EXISTS facebook_leads (
     telegram_user TEXT,
     telegram_id TEXT,
     
-    -- Дополнительные опциональные поля
-    email TEXT,
-    
     -- Автоматическая дата создания
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
 );
@@ -24,10 +21,6 @@ CREATE TABLE IF NOT EXISTS facebook_leads (
 -- Уникальный индекс для телефона (только для непустых значений)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_phone ON facebook_leads(phone) 
     WHERE phone IS NOT NULL AND phone != '';
-
--- Уникальный индекс для email (только для непустых значений)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_email ON facebook_leads(email) 
-    WHERE email IS NOT NULL AND email != '';
 
 -- Уникальный индекс для Facebook Link (только для непустых значений)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_facebook_link ON facebook_leads(facebook_link) 
@@ -44,9 +37,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_telegram_id ON facebook_leads(teleg
 -- Создание индексов для быстрого поиска
 -- Индекс для поиска по телефону (частичный поиск по последним цифрам)
 CREATE INDEX IF NOT EXISTS idx_phone ON facebook_leads(phone) WHERE phone IS NOT NULL;
-
--- Индекс для поиска по email
-CREATE INDEX IF NOT EXISTS idx_email ON facebook_leads(email) WHERE email IS NOT NULL;
 
 -- Индекс для поиска по Facebook Link
 CREATE INDEX IF NOT EXISTS idx_facebook_link ON facebook_leads(facebook_link) WHERE facebook_link IS NOT NULL;
@@ -75,7 +65,6 @@ COMMENT ON COLUMN facebook_leads.phone IS 'Номер телефона (норм
 COMMENT ON COLUMN facebook_leads.facebook_link IS 'Ссылка на Facebook профиль (username или profile.php?id=...)';
 COMMENT ON COLUMN facebook_leads.telegram_user IS 'Telegram username (без @)';
 COMMENT ON COLUMN facebook_leads.telegram_id IS 'Telegram ID (только цифры)';
-COMMENT ON COLUMN facebook_leads.email IS 'Email адрес';
 COMMENT ON COLUMN facebook_leads.created_at IS 'Дата и время создания записи';
 
 -- Представление для удобного просмотра данных (опционально)
@@ -88,7 +77,6 @@ SELECT
     facebook_link,
     telegram_user,
     telegram_id,
-    email,
     created_at,
     CASE 
         WHEN phone IS NOT NULL AND phone != '' THEN 'Phone'
