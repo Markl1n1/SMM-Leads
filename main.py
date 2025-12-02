@@ -808,12 +808,13 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             else:
                 last_digits = search_value
             
-            if DEBUG_MODE:
-                logger.info(f"DEBUG: Searching phone by last digits: {last_digits}")
+            # Дополнительный лог для отладки поиска по телефону
+            logger.info(f"PHONE SEARCH: normalized={search_value}, last_digits={last_digits}")
             # Search by suffix using ilike (case-insensitive pattern matching)
             # For phone numbers, ilike works the same as like since they're numeric
             # Limit results to 50 for performance
             response = client.table(TABLE_NAME).select("*").ilike(db_field_name, f"%{last_digits}").limit(50).execute()
+            logger.info(f"PHONE SEARCH: Supabase response data length={len(response.data) if response.data else 0}")
         else:
             # For other fields: exact match, limit to 50 results
             if DEBUG_MODE:
