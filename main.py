@@ -614,6 +614,9 @@ def get_add_menu_keyboard():
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command - show main menu"""
     try:
+        # Clean up all intermediate messages before showing main menu
+        await cleanup_all_messages_before_main_menu(update, context)
+        
         welcome_message = (
             "👋 Добро пожаловать в ClientsBot!\n\n"
             "Выберите действие:"
@@ -643,6 +646,9 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if user_id in user_data_store:
             del user_data_store[user_id]
+        
+        # Clean up all intermediate messages before showing main menu
+        await cleanup_all_messages_before_main_menu(update, context)
         
         # Show main menu
         welcome_message = (
@@ -691,6 +697,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
     if data == "main_menu":
+        # Clean up all intermediate messages before showing main menu
+        await cleanup_all_messages_before_main_menu(update, context)
+        
         await query.edit_message_text(
             "👋 Главное меню\n\nВыберите действие:",
             reply_markup=get_main_menu_keyboard()
@@ -759,6 +768,33 @@ async def save_add_message(update: Update, context: ContextTypes.DEFAULT_TYPE, m
     if 'add_message_ids' not in context.user_data:
         context.user_data['add_message_ids'] = []
     context.user_data['add_message_ids'].append(message_id)
+
+async def cleanup_all_messages_before_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clean up all intermediate bot messages before showing main menu"""
+    chat_id = update.effective_chat.id
+    bot = context.bot
+    
+    # Clean up add flow messages
+    if 'add_message_ids' in context.user_data and context.user_data['add_message_ids']:
+        message_ids = context.user_data['add_message_ids'].copy()
+        for msg_id in message_ids:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception as e:
+                if DEBUG_MODE:
+                    logger.debug(f"Could not delete add message {msg_id}: {e}")
+        context.user_data['add_message_ids'] = []
+    
+    # Clean up check flow messages
+    if 'last_check_messages' in context.user_data and context.user_data['last_check_messages']:
+        message_ids = context.user_data['last_check_messages'].copy()
+        for msg_id in message_ids:
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+            except Exception as e:
+                if DEBUG_MODE:
+                    logger.debug(f"Could not delete check message {msg_id}: {e}")
+        context.user_data['last_check_messages'] = []
 
 # Check callbacks
 async def check_telegram_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -902,11 +938,11 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             logger.info(f"DEBUG: Checking telegram_user, normalized: {search_value}")
     
     # Get Supabase client (for all fields, not just phone)
-        client = get_supabase_client()
-        if not client:
-            error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
-            await update.message.reply_text(
-                error_msg,
+    client = get_supabase_client()
+    if not client:
+        error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
+        await update.message.reply_text(
+            error_msg,
             reply_markup=get_main_menu_keyboard(),
             parse_mode='HTML'
         )
@@ -1814,6 +1850,10 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_unique, conflicting_field = check_fields_uniqueness_batch(client, fields_to_check)
         if not is_unique:
             field_label = UNIQUENESS_FIELD_LABELS.get(conflicting_field, conflicting_field)
+            
+            # Clean up all add flow messages BEFORE showing error message
+            await cleanup_add_messages(update, context)
+            
             await query.edit_message_text(
                 f"❌ <b>Ошибка:</b> {field_label} уже существует в базе.\n\n"
                 "ℹ️ Попробуйте добавить лид заново с другими данными.",
@@ -1867,16 +1907,20 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             message = "\n".join(message_parts)
             
+            # Clean up all add flow messages BEFORE showing final success message
+            # This ensures the final message is not deleted
+            await cleanup_add_messages(update, context)
+            
             await query.edit_message_text(
                 message,
                 reply_markup=get_main_menu_keyboard(),
                 parse_mode='HTML'
             )
             logger.info(f"Added new client: {save_data}")
-            
-            # Clean up all add flow messages except the final success message
-            await cleanup_add_messages(update, context)
         else:
+            # Clean up all add flow messages BEFORE showing error message
+            await cleanup_add_messages(update, context)
+            
             await query.edit_message_text(
                 "❌ <b>Ошибка:</b> Данные не были сохранены.\n\n"
                 "ℹ️ Попробуйте снова или обратитесь к администратору.",
@@ -1887,6 +1931,10 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error adding client: {e}", exc_info=True)
         error_msg = get_user_friendly_error(e, "сохранении данных")
+        
+        # Clean up all add flow messages BEFORE showing error message
+        await cleanup_add_messages(update, context)
+        
         await query.edit_message_text(
             error_msg,
             reply_markup=get_main_menu_keyboard(),
