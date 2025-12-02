@@ -744,15 +744,18 @@ async def save_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         context.user_data['last_check_messages'] = []
     context.user_data['last_check_messages'].append(message_id)
 
-async def cleanup_add_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clean up all add flow messages except the final success message"""
+async def cleanup_add_messages(update: Update, context: ContextTypes.DEFAULT_TYPE, exclude_message_id: int = None):
+    """Clean up all add flow messages except the final success message and optionally exclude a specific message"""
     user_id = update.effective_user.id
     if 'add_message_ids' in context.user_data and context.user_data['add_message_ids']:
         chat_id = update.effective_chat.id
         bot = context.bot
-        message_ids = context.user_data['add_message_ids']
+        message_ids = context.user_data['add_message_ids'].copy()
         
         for msg_id in message_ids:
+            # Skip the message we want to exclude (e.g., review screen)
+            if exclude_message_id and msg_id == exclude_message_id:
+                continue
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=msg_id)
             except Exception as e:
@@ -1851,15 +1854,33 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_unique:
             field_label = UNIQUENESS_FIELD_LABELS.get(conflicting_field, conflicting_field)
             
-            # Clean up all add flow messages BEFORE showing error message
-            await cleanup_add_messages(update, context)
+            # Get review screen message ID to exclude from cleanup
+            review_message_id = None
+            if query.message:
+                review_message_id = query.message.message_id
             
-            await query.edit_message_text(
-                f"❌ <b>Ошибка:</b> {field_label} уже существует в базе.\n\n"
-                "ℹ️ Попробуйте добавить лид заново с другими данными.",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode='HTML'
-            )
+            # Clean up all add flow messages BEFORE showing error message
+            # Exclude review screen message so we can edit it
+            await cleanup_add_messages(update, context, exclude_message_id=review_message_id)
+            
+            try:
+                await query.edit_message_text(
+                    f"❌ <b>Ошибка:</b> {field_label} уже существует в базе.\n\n"
+                    "ℹ️ Попробуйте добавить лид заново с другими данными.",
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                # If edit fails (message was deleted), send new message
+                if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
+                    await query.message.reply_text(
+                        f"❌ <b>Ошибка:</b> {field_label} уже существует в базе.\n\n"
+                        "ℹ️ Попробуйте добавить лид заново с другими данными.",
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode='HTML'
+                    )
+                else:
+                    raise
             if user_id in user_data_store:
                 del user_data_store[user_id]
             if user_id in user_data_store_access_time:
@@ -1907,39 +1928,91 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             message = "\n".join(message_parts)
             
-            # Clean up all add flow messages BEFORE showing final success message
-            # This ensures the final message is not deleted
-            await cleanup_add_messages(update, context)
+            # Get review screen message ID to exclude from cleanup
+            review_message_id = None
+            if query.message:
+                review_message_id = query.message.message_id
             
-            await query.edit_message_text(
-                message,
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode='HTML'
-            )
+            # Clean up all add flow messages BEFORE showing final success message
+            # Exclude review screen message so we can edit it
+            await cleanup_add_messages(update, context, exclude_message_id=review_message_id)
+            
+            try:
+                await query.edit_message_text(
+                    message,
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                # If edit fails (message was deleted), send new message
+                if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
+                    await query.message.reply_text(
+                        message,
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode='HTML'
+                    )
+                else:
+                    raise
+            
             logger.info(f"Added new client: {save_data}")
         else:
-            # Clean up all add flow messages BEFORE showing error message
-            await cleanup_add_messages(update, context)
+            # Get review screen message ID to exclude from cleanup
+            review_message_id = None
+            if query.message:
+                review_message_id = query.message.message_id
             
-            await query.edit_message_text(
-                "❌ <b>Ошибка:</b> Данные не были сохранены.\n\n"
-                "ℹ️ Попробуйте снова или обратитесь к администратору.",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode='HTML'
-            )
+            # Clean up all add flow messages BEFORE showing error message
+            # Exclude review screen message so we can edit it
+            await cleanup_add_messages(update, context, exclude_message_id=review_message_id)
+            
+            try:
+                await query.edit_message_text(
+                    "❌ <b>Ошибка:</b> Данные не были сохранены.\n\n"
+                    "ℹ️ Попробуйте снова или обратитесь к администратору.",
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                # If edit fails (message was deleted), send new message
+                if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
+                    await query.message.reply_text(
+                        "❌ <b>Ошибка:</b> Данные не были сохранены.\n\n"
+                        "ℹ️ Попробуйте снова или обратитесь к администратору.",
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode='HTML'
+                    )
+                else:
+                    raise
     
     except Exception as e:
         logger.error(f"Error adding client: {e}", exc_info=True)
         error_msg = get_user_friendly_error(e, "сохранении данных")
         
-        # Clean up all add flow messages BEFORE showing error message
-        await cleanup_add_messages(update, context)
+        # Get review screen message ID to exclude from cleanup
+        review_message_id = None
+        if query.message:
+            review_message_id = query.message.message_id
         
-        await query.edit_message_text(
-            error_msg,
-            reply_markup=get_main_menu_keyboard(),
-            parse_mode='HTML'
-        )
+        # Clean up all add flow messages BEFORE showing error message
+        # Exclude review screen message so we can edit it
+        await cleanup_add_messages(update, context, exclude_message_id=review_message_id)
+        
+        try:
+            await query.edit_message_text(
+                error_msg,
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode='HTML'
+            )
+        except Exception as edit_error:
+            # If edit fails (message was deleted), send new message
+            if "not found" in str(edit_error) or "BadRequest" in str(type(edit_error).__name__):
+                await query.message.reply_text(
+                    error_msg,
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+            else:
+                raise
     
     # Clean up
     if user_id in user_data_store:
