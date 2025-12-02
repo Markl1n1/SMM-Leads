@@ -1525,34 +1525,34 @@ async def add_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get('current_state', ADD_FULLNAME)
     
     # Move to next field
-    next_field, next_state = get_next_add_field(field_name)
+    next_field, next_state, current_step, total_steps = get_next_add_field(field_name)
     
     if next_field == 'review':
         # Show review and save option
         await show_add_review(update, context)
         return ADD_REVIEW
     else:
-        # Show next field
+        # Show next field with progress indicator
         field_label = get_field_label(next_field)
         is_optional = next_field not in ['fullname', 'manager_name']
         
+        # Add progress indicator
+        progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
+        
         # Для обязательных полей (fullname, manager_name) не показываем требования к формату
         if next_field in ['fullname', 'manager_name']:
-            message = f"📝 Введите {field_label}:"
+            message = f"{progress_text}📝 Введите {field_label}:"
         else:
             requirements = get_field_format_requirements(next_field)
-            message = f"📝 Введите {field_label}:\n\n{requirements}"
+            message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
         
         context.user_data['current_field'] = next_field
         context.user_data['current_state'] = next_state
         
-        # Используем HTML parse_mode если есть требования к формату
-        use_html = next_field not in ['fullname', 'manager_name']
-        
         await query.edit_message_text(
             message,
             reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True),
-            parse_mode='HTML' if use_html else None
+            parse_mode='HTML'
         )
         return next_state
 
