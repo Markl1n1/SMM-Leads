@@ -2379,12 +2379,6 @@ def create_telegram_app():
                 CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
                 CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
             ],
-            ADD_EMAIL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
-                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
-                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
-                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
-            ],
             ADD_REVIEW: [
                 CallbackQueryHandler(add_save_callback, pattern="^add_save$"),
                 CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
