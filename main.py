@@ -703,6 +703,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Get current message ID to exclude from cleanup
         current_message_id = query.message.message_id if query.message else None
         
+        # IMPORTANT: Remove current message from cleanup lists BEFORE cleanup
+        # This prevents it from being deleted even if cleanup runs quickly
+        if current_message_id:
+            if 'add_message_ids' in context.user_data and current_message_id in context.user_data['add_message_ids']:
+                context.user_data['add_message_ids'].remove(current_message_id)
+            if 'last_check_messages' in context.user_data and current_message_id in context.user_data['last_check_messages']:
+                context.user_data['last_check_messages'].remove(current_message_id)
+        
         try:
             # Show main menu FIRST (fast response)
             await query.edit_message_text(
@@ -712,17 +720,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Clean up messages AFTER showing menu (in background, don't wait)
             # This ensures fast response to user
+            # Add small delay to ensure edit completes before cleanup starts
+            async def delayed_cleanup():
+                import asyncio
+                await asyncio.sleep(0.2)  # Small delay to ensure edit completes
+                await cleanup_all_messages_before_main_menu(update, context, exclude_message_id=current_message_id)
+            
             # Use application.create_task to ensure it runs in the correct event loop
-            context.application.create_task(cleanup_all_messages_before_main_menu(update, context, exclude_message_id=current_message_id))
+            context.application.create_task(delayed_cleanup())
         except Exception as e:
             # If edit fails (message was deleted), send new message
             if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
-                await query.message.reply_text(
-                    "👋 Главное меню\n\nВыберите действие:",
-                    reply_markup=get_main_menu_keyboard()
-                )
-                # Clean up in background
-                context.application.create_task(cleanup_all_messages_before_main_menu(update, context, exclude_message_id=current_message_id))
+                try:
+                    await query.message.reply_text(
+                        "👋 Главное меню\n\nВыберите действие:",
+                        reply_markup=get_main_menu_keyboard()
+                    )
+                    # Clean up in background with delay
+                    async def delayed_cleanup_fallback():
+                        import asyncio
+                        await asyncio.sleep(0.2)
+                        await cleanup_all_messages_before_main_menu(update, context, exclude_message_id=current_message_id)
+                    context.application.create_task(delayed_cleanup_fallback())
+                except Exception as reply_error:
+                    logger.error(f"Error sending reply message: {reply_error}", exc_info=True)
+                    # Last resort: try to send without cleanup
+                    try:
+                        await context.bot.send_message(
+                            chat_id=query.message.chat_id,
+                            text="👋 Главное меню\n\nВыберите действие:",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                    except Exception as send_error:
+                        logger.error(f"Error sending message directly: {send_error}", exc_info=True)
             else:
                 logger.error(f"Error in main_menu callback: {e}", exc_info=True)
                 raise
@@ -740,6 +770,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "➕ Добавить клиента\n\nВыберите способ добавления:",
             reply_markup=get_add_menu_keyboard()
         )
+    
+    elif data == "add_new":
+        # Fallback: if ConversationHandler doesn't catch this, handle it here
+        logger.warning(f"add_new callback received in button_callback (should be handled by ConversationHandler)")
+        try:
+            # Try to call add_new_callback directly as fallback
+            result = await add_new_callback(update, context)
+            if result:
+                return result
+        except Exception as e:
+            logger.error(f"Error in add_new fallback handler: {e}", exc_info=True)
+            await query.answer("❌ Произошла ошибка. Попробуйте снова.")
+            await query.edit_message_text(
+                "❌ Произошла ошибка при запуске добавления лида.\n\n"
+                "Попробуйте снова или обратитесь к администратору.",
+                reply_markup=get_main_menu_keyboard()
+            )
 
 # Message cleanup functions
 async def cleanup_check_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -812,9 +859,11 @@ async def cleanup_all_messages_before_main_menu(update: Update, context: Context
         message_ids_to_delete.extend(context.user_data['last_check_messages'])
         context.user_data['last_check_messages'] = []
     
-    # Remove excluded message ID if provided
-    if exclude_message_id and exclude_message_id in message_ids_to_delete:
-        message_ids_to_delete.remove(exclude_message_id)
+    # Remove excluded message ID if provided (double-check to be safe)
+    if exclude_message_id:
+        # Remove from list if present (multiple times to be absolutely sure)
+        while exclude_message_id in message_ids_to_delete:
+            message_ids_to_delete.remove(exclude_message_id)
     
     # Delete messages in parallel for better performance
     if message_ids_to_delete:
@@ -887,28 +936,44 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
 async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start adding new lead - sequential flow"""
     query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    user_data_store[user_id] = {}
-    user_data_store_access_time[user_id] = time.time()
-    context.user_data['current_field'] = 'fullname'
-    context.user_data['add_step'] = 0
-    
-    # Start with first field: Full Name
-    field_label = get_field_label('fullname')
-    _, _, current_step, total_steps = get_next_add_field('')
-    
-    message = f"<b>Шаг {current_step} из {total_steps}</b>\n\n📝 Введите {field_label}:"
-    
-    await query.edit_message_text(
-        message,
-        reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
-        parse_mode='HTML'
-    )
-    # Save message ID for cleanup
-    if query.message:
-        await save_add_message(update, context, query.message.message_id)
-    return ADD_FULLNAME
+    try:
+        await query.answer()
+        user_id = query.from_user.id
+        logger.info(f"Add flow started for user {user_id}")
+        
+        user_data_store[user_id] = {}
+        user_data_store_access_time[user_id] = time.time()
+        context.user_data['current_field'] = 'fullname'
+        context.user_data['add_step'] = 0
+        
+        # Start with first field: Full Name
+        field_label = get_field_label('fullname')
+        _, _, current_step, total_steps = get_next_add_field('')
+        
+        message = f"<b>Шаг {current_step} из {total_steps}</b>\n\n📝 Введите {field_label}:"
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
+            parse_mode='HTML'
+        )
+        # Save message ID for cleanup
+        if query.message:
+            await save_add_message(update, context, query.message.message_id)
+        logger.info(f"Add flow message sent for user {user_id}, returning ADD_FULLNAME state")
+        return ADD_FULLNAME
+    except Exception as e:
+        logger.error(f"Error in add_new_callback: {e}", exc_info=True)
+        try:
+            await query.answer("❌ Произошла ошибка. Попробуйте снова.")
+            await query.edit_message_text(
+                "❌ Произошла ошибка при запуске добавления лида.\n\n"
+                "Попробуйте снова или обратитесь к администратору.",
+                reply_markup=get_main_menu_keyboard()
+            )
+        except Exception as fallback_error:
+            logger.error(f"Error in add_new_callback fallback: {fallback_error}", exc_info=True)
+        return ConversationHandler.END
 
 # Universal check function
 async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, field_name: str, field_label: str, current_state: int):
@@ -1399,7 +1464,7 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not field_name:
         # Fallback: start from beginning
         await update.message.reply_text(
-            "❌ Ошибка: поле не определено. Начинаем заново.",
+            "❌ Неизвестная команда. Выберите действие:",
             reply_markup=get_main_menu_keyboard()
         )
         return ConversationHandler.END
@@ -2655,10 +2720,7 @@ def create_telegram_app():
     telegram_app.add_handler(CommandHandler("q", quit_command))
     # Note: /q command has high priority and will work from any state
     
-    # Add callback query handler for menu navigation buttons and edit lead
-    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|edit_lead_)"))
-    
-    # Conversation handlers for checking
+    # Conversation handlers for checking (register BEFORE button_callback to have priority)
     check_telegram_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(check_telegram_callback, pattern="^check_telegram$")],
         states={CHECK_BY_TELEGRAM: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_telegram_input)]},
@@ -2742,13 +2804,17 @@ def create_telegram_app():
         per_message=False,
     )
     
-    # Register all handlers
+    # Register ConversationHandlers FIRST (before button_callback) to have priority
     telegram_app.add_handler(check_telegram_conv)
     telegram_app.add_handler(check_fb_link_conv)
     telegram_app.add_handler(check_telegram_id_conv)
     telegram_app.add_handler(check_phone_conv)
     telegram_app.add_handler(check_fullname_conv)
     telegram_app.add_handler(add_conv)
+    
+    # Add callback query handler for menu navigation buttons and edit lead
+    # Registered AFTER ConversationHandlers so they have priority
+    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu|edit_lead_)$"))
     
     # Edit conversation handler
     edit_conv = ConversationHandler(
