@@ -2096,7 +2096,7 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "❌ Ошибка: Не удалось подключиться к базе данных.",
             reply_markup=get_main_menu_keyboard()
         )
-        return
+        return ConversationHandler.END
     
     try:
         response = client.table(TABLE_NAME).select("*").eq("id", lead_id).execute()
@@ -2105,7 +2105,7 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 "❌ Ошибка: Лид не найден.",
                 reply_markup=get_main_menu_keyboard()
             )
-            return
+            return ConversationHandler.END
         
         lead = response.data[0]
         user_id = query.from_user.id
@@ -2130,7 +2130,8 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         # Request PIN code before allowing editing
         message = f"🔒 Для редактирования лида (ID: {lead_id}) требуется PIN-код.\n\nВведите PIN-код:"
-        await query.edit_message_text(message)
+        # Use reply_text instead of edit_message_text to ensure ConversationHandler works correctly
+        await query.message.reply_text(message)
         return EDIT_PIN
         
     except Exception as e:
@@ -2144,8 +2145,23 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def edit_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle PIN code input for editing"""
     user_id = update.effective_user.id
+    
+    # Check if message exists and has text
+    if not update.message or not update.message.text:
+        await update.message.reply_text(
+            "❌ Ошибка: Неверный формат сообщения. Пожалуйста, введите PIN-код текстом."
+        )
+        return EDIT_PIN
+    
     text = update.message.text.strip()
     lead_id = context.user_data.get('editing_lead_id')
+    
+    if not lead_id:
+        await update.message.reply_text(
+            "❌ Ошибка: ID лида не найден. Пожалуйста, начните редактирование заново.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
     
     # PIN code is "2025"
     PIN_CODE = "2025"
