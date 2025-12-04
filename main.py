@@ -445,18 +445,14 @@ def get_field_format_requirements(field_name: str) -> str:
             "<code>1234567890</code> (минимум 10 цифр)"
         ),
         'facebook_link': (
-            "📋 <b>Требования к формату:</b>\n"
-            "• Поле <b>опциональное</b> (можно пропустить)\n"
-            "• Можно вставить полную ссылку или только username/ID\n"
-            "• Бот автоматически извлечёт нужную информацию\n\n"
-            "💡 <b>Примеры:</b>\n"
+            "Примеры:\n"
             "<code>https://www.facebook.com/username</code>\n"
             "<code>www.facebook.com/username</code>\n"
             "<code>facebook.com/username</code>\n"
             "<code>https://www.facebook.com/profile.php?id=123456789012345</code>\n"
             "<code>https://m.facebook.com/username</code>\n\n"
             "⚠️ Ссылка должна начинаться с http:// или https://\n\n"
-            "‼️ <b>Важно:</b> добавляйте только прямую ссылку на профиль (без фото, информации и прочих вкладок).\n\n"
+            "‼️ Важно: добавляйте только прямую ссылку на профиль (без фото, информации и прочих вкладок).\n\n"
             "Пример: <code>facebook.com/username</code> ✅\n"
             "А не ссылки с лишними символами ❌"
         ),
@@ -946,9 +942,9 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Start with first field: Full Name
         field_label = get_field_label('fullname')
         _, _, current_step, total_steps = get_next_add_field('')
-        requirements = get_field_format_requirements('fullname')
         
-        message = f"<b>Шаг {current_step} из {total_steps}</b>\n\n📝 Введите {field_label}:\n\n{requirements}"
+        # Убираем описание для первого шага
+        message = f"<b>Шаг {current_step} из {total_steps}</b>\n\n📝 Введите {field_label}:"
         
         await query.edit_message_text(
             message,
@@ -1533,10 +1529,14 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             field_label = get_field_label(field_name)
             is_optional = field_name not in ['fullname', 'manager_name']
             
-            # Показываем требования к формату для всех полей
-            requirements = get_field_format_requirements(field_name)
-            message = f"❌ Поле не может быть пустым.\n\n📝 Введите {field_label}:\n\n{requirements}"
-            use_html = True
+            # Для обязательных полей (fullname, manager_name) не показываем требования к формату
+            if field_name in ['fullname', 'manager_name']:
+                message = f"❌ Поле не может быть пустым.\n\n📝 Введите {field_label}:"
+                use_html = False
+            else:
+                requirements = get_field_format_requirements(field_name)
+                message = f"❌ Поле не может быть пустым.\n\n📝 Введите {field_label}:\n\n{requirements}"
+                use_html = True
             
             sent_message = await update.message.reply_text(
                 message,
@@ -1586,9 +1586,12 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add progress indicator
         progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
         
-        # Показываем требования к формату для всех полей
-        requirements = get_field_format_requirements(next_field)
-        message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
+        # Для обязательных полей (fullname, manager_name) не показываем требования к формату
+        if next_field in ['fullname', 'manager_name']:
+            message = f"{progress_text}📝 Введите {field_label}:"
+        else:
+            requirements = get_field_format_requirements(next_field)
+            message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
         
         context.user_data['current_field'] = next_field
         context.user_data['current_state'] = next_state
@@ -1770,9 +1773,12 @@ async def add_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add progress indicator
         progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
         
-        # Показываем требования к формату для всех полей
-        requirements = get_field_format_requirements(next_field)
-        message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
+        # Для обязательных полей (fullname, manager_name) не показываем требования к формату
+        if next_field in ['fullname', 'manager_name']:
+            message = f"{progress_text}📝 Введите {field_label}:"
+        else:
+            requirements = get_field_format_requirements(next_field)
+            message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
         
         context.user_data['current_field'] = next_field
         context.user_data['current_state'] = next_state
@@ -1822,9 +1828,12 @@ async def add_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, _, current_step, total_steps = get_next_add_field(prev_field)
         progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
         
-        # Показываем требования к формату для всех полей
-        requirements = get_field_format_requirements(prev_field)
-        message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
+        # Для обязательных полей (fullname, manager_name) не показываем требования к формату
+        if prev_field in ['fullname', 'manager_name']:
+            message = f"{progress_text}📝 Введите {field_label}:"
+        else:
+            requirements = get_field_format_requirements(prev_field)
+            message = f"{progress_text}📝 Введите {field_label}:\n\n{requirements}"
         
         context.user_data['current_field'] = prev_field
         context.user_data['current_state'] = prev_state
