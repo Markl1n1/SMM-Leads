@@ -160,20 +160,24 @@ def format_facebook_link_for_display(value: str) -> str:
         value: Facebook link value from database (can be ID or username)
     
     Returns:
-        Formatted Facebook URL
+        Formatted Facebook URL with https://
     """
     if not value:
         return value
     
     value = str(value).strip()
     
+    # If already a full URL, return as is
+    if value.startswith('http://') or value.startswith('https://'):
+        return value
+    
     # Check if value is only digits (Facebook ID)
     if value.isdigit():
         # Format as profile.php?id=...
-        return f"www.facebook.com/profile.php?id={value}"
+        return f"https://www.facebook.com/profile.php?id={value}"
     else:
         # Format as username link
-        return f"www.facebook.com/{value}"
+        return f"https://www.facebook.com/{value}"
 
 def get_user_friendly_error(error: Exception, operation: str = "операция") -> str:
     """Convert technical errors to user-friendly messages"""
@@ -1633,7 +1637,12 @@ async def show_add_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for field_name, field_label in field_labels.items():
         value = user_data.get(field_name)
         if value:
-            escaped_value = escape_html(str(value))
+            # Format Facebook link to full URL for display
+            if field_name == 'facebook_link':
+                formatted_value = format_facebook_link_for_display(str(value))
+                escaped_value = escape_html(formatted_value)
+            else:
+                escaped_value = escape_html(str(value))
             message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
     
     message = "\n".join(message_parts)
@@ -1999,7 +2008,12 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 display_field = 'telegram_user' if field_name == 'telegram_name' else field_name
                 value = save_data.get(display_field) or user_data.get(field_name)
                 if value:
-                    escaped_value = escape_html(str(value))
+                    # Format Facebook link to full URL for display
+                    if field_name == 'facebook_link':
+                        formatted_value = format_facebook_link_for_display(str(value))
+                        escaped_value = escape_html(formatted_value)
+                    else:
+                        escaped_value = escape_html(str(value))
                     message_parts.append(f"{field_label}: <code>{escaped_value}</code>")
             
             # Add date
