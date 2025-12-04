@@ -454,7 +454,11 @@ def get_field_format_requirements(field_name: str) -> str:
             "<code>www.facebook.com/username</code>\n"
             "<code>facebook.com/username</code>\n"
             "<code>https://www.facebook.com/profile.php?id=123456789012345</code>\n"
-            "<code>https://m.facebook.com/username</code>"
+            "<code>https://m.facebook.com/username</code>\n\n"
+            "⚠️ Ссылка должна начинаться с http:// или https://\n\n"
+            "‼️ <b>Важно:</b> добавляйте только прямую ссылку на профиль (без фото, информации и прочих вкладок).\n\n"
+            "Пример: <code>facebook.com/username</code> ✅\n"
+            "А не ссылки с лишними символами ❌"
         ),
         'telegram_name': (
             "📋 <b>Требования к формату:</b>\n"
