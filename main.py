@@ -528,8 +528,9 @@ def get_navigation_keyboard(is_optional: bool = False, show_back: bool = True) -
     EDIT_FB_LINK,
     EDIT_TELEGRAM_NAME,
     EDIT_TELEGRAM_ID,
-    EDIT_MANAGER_NAME
-) = range(19)
+    EDIT_MANAGER_NAME,
+    EDIT_PIN
+) = range(20)
 
 # Store user data during conversation - isolated per user_id for concurrent access
 # Each user's data is stored separately, allowing 10+ managers to work simultaneously
@@ -640,20 +641,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
-    # Handle edit lead callback
-    if data.startswith("edit_lead_"):
-        try:
-            lead_id = int(data.split("_")[-1])
-            await edit_lead_callback(update, context, lead_id)
-            return
-        except (ValueError, IndexError) as e:
-            logger.error(f"Error parsing edit_lead callback: {e}")
-            await query.edit_message_text(
-                "❌ Ошибка: Неверный формат запроса.",
-                reply_markup=get_main_menu_keyboard()
-            )
-            return
-        
+    # Note: edit_lead_* callbacks are now handled by ConversationHandler (edit_lead_entry_callback)
+    
     if data == "main_menu":
         # Get current message ID to exclude from cleanup
         current_message_id = query.message.message_id if query.message else None
@@ -2139,13 +2128,10 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         user_data_store_access_time[user_id] = time.time()
         context.user_data['editing_lead_id'] = lead_id
         
-        # Show edit menu (similar to add menu)
-        message = f"✏️ Редактирование лида (ID: {lead_id})\n\nВыберите поле для редактирования:"
-        await query.edit_message_text(
-            message,
-            reply_markup=get_edit_field_keyboard(user_id)
-        )
-        return EDIT_MENU
+        # Request PIN code before allowing editing
+        message = f"🔒 Для редактирования лида (ID: {lead_id}) требуется PIN-код.\n\nВведите PIN-код:"
+        await query.edit_message_text(message)
+        return EDIT_PIN
         
     except Exception as e:
         logger.error(f"Error loading lead for editing: {e}", exc_info=True)
@@ -2154,6 +2140,50 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
             reply_markup=get_main_menu_keyboard()
         )
         return ConversationHandler.END
+
+async def edit_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle PIN code input for editing"""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    lead_id = context.user_data.get('editing_lead_id')
+    
+    # PIN code is "2025"
+    PIN_CODE = "2025"
+    
+    if text == PIN_CODE:
+        # PIN is correct, show edit menu
+        if user_id not in user_data_store and lead_id:
+            # Reload lead data if missing
+            client = get_supabase_client()
+            if client:
+                try:
+                    response = client.table(TABLE_NAME).select("*").eq("id", lead_id).execute()
+                    if response.data and len(response.data) > 0:
+                        lead = response.data[0]
+                        lead_data = lead.copy()
+                        if 'telegram_user' in lead_data and lead_data.get('telegram_user'):
+                            if 'telegram_name' not in lead_data or not lead_data.get('telegram_name'):
+                                lead_data['telegram_name'] = lead_data.get('telegram_user')
+                        for field in ['fullname', 'manager_name', 'phone', 'facebook_link', 'telegram_name', 'telegram_id']:
+                            if field not in lead_data:
+                                lead_data[field] = None
+                        user_data_store[user_id] = lead_data
+                        user_data_store_access_time[user_id] = time.time()
+                except Exception as e:
+                    logger.error(f"Error reloading lead data in PIN handler: {e}", exc_info=True)
+        
+        message = f"✏️ Редактирование лида (ID: {lead_id})\n\nВыберите поле для редактирования:"
+        await update.message.reply_text(
+            message,
+            reply_markup=get_edit_field_keyboard(user_id)
+        )
+        return EDIT_MENU
+    else:
+        # PIN is incorrect, ask again
+        await update.message.reply_text(
+            "❌ Неверный PIN-код. Попробуйте снова.\n\nВведите PIN-код:"
+        )
+        return EDIT_PIN
 
 def get_edit_field_keyboard(user_id: int):
     """Create keyboard for editing lead fields"""
@@ -2408,6 +2438,7 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "❌ Ошибка: Не удалось подключиться к базе данных.",
             reply_markup=get_main_menu_keyboard()
         )
+        return ConversationHandler.END
     if user_id in user_data_store:
         del user_data_store[user_id]
         if user_id in user_data_store_access_time:
@@ -2477,6 +2508,20 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         del context.user_data['editing_lead_id']
     
     return ConversationHandler.END
+
+async def edit_lead_entry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for editing a lead - parses lead_id from callback_data"""
+    query = update.callback_query
+    data = query.data
+    
+    # Parse lead_id from callback_data (format: "edit_lead_123")
+    try:
+        lead_id = int(data.split("_")[-1])
+        return await edit_lead_callback(update, context, lead_id)
+    except (ValueError, IndexError) as e:
+        logger.error(f"Error parsing edit_lead callback: {e}")
+        await query.answer("❌ Ошибка: Неверный формат запроса.", show_alert=True)
+        return ConversationHandler.END
 
 async def edit_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel editing lead"""
@@ -2795,11 +2840,12 @@ def create_telegram_app():
     
     # Add callback query handler for menu navigation buttons and edit lead
     # Registered AFTER ConversationHandlers so they have priority
-    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu|edit_lead_\\d+)$"))
+    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu)$"))
     
     # Edit conversation handler
     edit_conv = ConversationHandler(
         entry_points=[
+            CallbackQueryHandler(edit_lead_entry_callback, pattern="^edit_lead_\\d+$"),
             CallbackQueryHandler(edit_field_fullname_callback, pattern="^edit_field_fullname$"),
             CallbackQueryHandler(edit_field_phone_callback, pattern="^edit_field_phone$"),
             CallbackQueryHandler(edit_field_fb_link_callback, pattern="^edit_field_fb_link$"),
@@ -2810,6 +2856,7 @@ def create_telegram_app():
             CallbackQueryHandler(edit_cancel_callback, pattern="^edit_cancel$"),
         ],
         states={
+            EDIT_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_pin_input)],
             EDIT_MENU: [
                 CallbackQueryHandler(edit_field_fullname_callback, pattern="^edit_field_fullname$"),
                 CallbackQueryHandler(edit_field_phone_callback, pattern="^edit_field_phone$"),
