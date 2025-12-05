@@ -1168,24 +1168,17 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             # Example: "0501234560" will find "0501234560", "+380501234560", etc.
             pattern = f"%{escaped_search_value}%"
             
-            logger.info(f"[PHONE SEARCH] Starting search - original: '{update.message.text}', normalized: '{search_value}', escaped: '{escaped_search_value}', pattern: '{pattern}'")
+            logger.info(f"[PHONE SEARCH] Using pattern: '{pattern}' for field 'phone' (search_value: '{search_value}')")
             
             # Search using ilike (case-insensitive pattern matching)
             # Limit results to 50 for performance
-            try:
-                response = (
-                    client.table(TABLE_NAME)
-                    .select("*")
-                    .ilike(db_field_name, pattern)
-                    .limit(50)
-                    .execute()
-                )
-                logger.info(f"[PHONE SEARCH] Query executed successfully. Results count: {len(response.data) if response.data else 0}")
-                if response.data:
-                    logger.info(f"[PHONE SEARCH] First result phone: '{response.data[0].get('phone')}'")
-            except Exception as query_error:
-                logger.error(f"[PHONE SEARCH] Query error: {query_error}", exc_info=True)
-                raise
+            response = (
+                client.table(TABLE_NAME)
+                .select("*")
+                .ilike(db_field_name, pattern)
+                .limit(50)
+                .execute()
+            )
         else:
             # For other fields: exact match, limit to 50 results
             response = client.table(TABLE_NAME).select("*").eq(db_field_name, search_value).limit(50).execute()
@@ -1280,7 +1273,6 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
                     if len(label) > 60:
                         label = label[:57] + "..."
                     keyboard.append([InlineKeyboardButton(label, callback_data=f"edit_lead_{lead_id}")])
-import os
             
             # Add main menu button
             keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
