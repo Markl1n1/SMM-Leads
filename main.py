@@ -634,14 +634,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /q command - return to main menu from any state"""
     try:
-        # Clear any conversation state
+        # Clear any conversation state - explicitly clear all keys to ensure ConversationHandler ends
         if context.user_data:
+            # Remove all conversation-related keys
+            keys_to_remove = [
+                'current_field', 'current_state', 'add_step', 'editing_lead_id',
+                'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+                'check_results', 'selected_lead_id'
+            ]
+            for key in keys_to_remove:
+                if key in context.user_data:
+                    del context.user_data[key]
+            # Also clear any remaining state
             context.user_data.clear()
         
         # Clear user data store if exists
         user_id = update.effective_user.id
         if user_id in user_data_store:
             del user_data_store[user_id]
+        if user_id in user_data_store_access_time:
+            del user_data_store_access_time[user_id]
         
         # Show main menu FIRST (fast response)
         welcome_message = (
@@ -2942,7 +2954,8 @@ def create_telegram_app():
     
     # Add callback query handler for menu navigation buttons and edit lead
     # Registered AFTER ConversationHandlers so they have priority
-    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu)$"))
+    # Note: add_new is included here as fallback, but ConversationHandler should catch it first
+    telegram_app.add_handler(CallbackQueryHandler(button_callback, pattern="^(main_menu|check_menu|add_menu|add_new)$"))
     
     # Edit conversation handler
     edit_conv = ConversationHandler(
