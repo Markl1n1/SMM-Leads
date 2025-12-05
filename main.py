@@ -1588,7 +1588,22 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Update access time
     user_data_store_access_time[user_id] = time.time()
+    
+    # Log before cleanup
+    if user_id in user_data_store:
+        logger.info(f"[ADD_FIELD] Before cleanup - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}")
+        if 'telegram_name' in user_data_store[user_id]:
+            logger.info(f"[ADD_FIELD] Before cleanup - telegram_name: '{user_data_store[user_id].get('telegram_name')}'")
+    
     cleanup_user_data_store()
+    
+    # Log after cleanup
+    if user_id in user_data_store:
+        logger.info(f"[ADD_FIELD] After cleanup - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}")
+        if 'telegram_name' in user_data_store[user_id]:
+            logger.info(f"[ADD_FIELD] After cleanup - telegram_name: '{user_data_store[user_id].get('telegram_name')}'")
+    else:
+        logger.error(f"[ADD_FIELD] After cleanup - user_data_store[{user_id}] was DELETED!")
     
     if not field_name:
         # Fallback: start from beginning
@@ -1736,12 +1751,23 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save value only if validation passed
     if validation_passed and normalized_value:
         user_data_store[user_id][field_name] = normalized_value
+        logger.info(f"[ADD_FIELD] Saved {field_name} = '{normalized_value}' for user {user_id}")
+        logger.info(f"[ADD_FIELD] user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}")
+    else:
+        logger.warning(f"[ADD_FIELD] Not saving {field_name}: validation_passed={validation_passed}, normalized_value='{normalized_value}'")
     
     # Move to next field
     next_field, next_state, current_step, total_steps = get_next_add_field(field_name)
     
+    # Log current state before moving to next field
+    if user_id in user_data_store:
+        logger.info(f"[ADD_FIELD] Before moving to {next_field} - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}")
+        if 'telegram_name' in user_data_store[user_id]:
+            logger.info(f"[ADD_FIELD] Before moving to {next_field} - telegram_name: '{user_data_store[user_id].get('telegram_name')}'")
+    
     if next_field == 'review':
         # Show review and save option
+        logger.info(f"[ADD_FIELD] Moving to review - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys()) if user_id in user_data_store else 'N/A'}")
         await show_add_review(update, context)
         return ADD_REVIEW
     else:
@@ -1788,6 +1814,12 @@ async def show_add_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show review of entered data before saving"""
     user_id = update.effective_user.id
     user_data = user_data_store.get(user_id, {})
+    
+    logger.info(f"[SHOW_REVIEW] user_data keys: {list(user_data.keys())}")
+    if 'telegram_name' in user_data:
+        logger.info(f"[SHOW_REVIEW] telegram_name: '{user_data.get('telegram_name')}'")
+    else:
+        logger.warning(f"[SHOW_REVIEW] telegram_name NOT in user_data!")
     
     message_parts = ["✅ <b>Проверьте введенные данные:</b>\n"]
     
@@ -2099,6 +2131,10 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
     # Check uniqueness of fields - optimized batch check
+    logger.info(f"[ADD_SAVE] Before uniqueness check - user_data keys: {list(user_data.keys())}")
+    if 'telegram_name' in user_data:
+        logger.info(f"[ADD_SAVE] Before uniqueness check - telegram_name: '{user_data.get('telegram_name')}'")
+    
     fields_to_check = {}
     for field_name in ['phone', 'fullname', 'facebook_link', 'telegram_name', 'telegram_id']:
         field_value = user_data.get(field_name)
@@ -2106,10 +2142,19 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Normalize phone if checking phone field
             check_value = normalize_phone(field_value) if field_name == 'phone' else field_value
             fields_to_check[field_name] = check_value
+            logger.info(f"[ADD_SAVE] Adding {field_name} to uniqueness check: '{check_value}'")
+        else:
+            logger.info(f"[ADD_SAVE] Skipping {field_name} in uniqueness check (empty or None)")
+    
+    logger.info(f"[ADD_SAVE] Fields to check for uniqueness: {list(fields_to_check.keys())}")
     
     # Batch check uniqueness
     if fields_to_check:
         is_unique, conflicting_field = check_fields_uniqueness_batch(client, fields_to_check)
+        logger.info(f"[ADD_SAVE] After uniqueness check - is_unique: {is_unique}, conflicting_field: {conflicting_field}")
+        logger.info(f"[ADD_SAVE] After uniqueness check - user_data keys: {list(user_data.keys())}")
+        if 'telegram_name' in user_data:
+            logger.info(f"[ADD_SAVE] After uniqueness check - telegram_name: '{user_data.get('telegram_name')}'")
         if not is_unique:
             field_label = UNIQUENESS_FIELD_LABELS.get(conflicting_field, conflicting_field)
             
@@ -2151,15 +2196,42 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Prepare data for saving - map telegram_name to telegram_user for database compatibility
         save_data = user_data.copy()
         
+        # Debug logging
+        logger.info(f"[ADD_SAVE] user_data keys: {list(user_data.keys())}")
+        logger.info(f"[ADD_SAVE] telegram_name in user_data: {'telegram_name' in user_data}")
+        if 'telegram_name' in user_data:
+            logger.info(f"[ADD_SAVE] telegram_name value: '{user_data.get('telegram_name')}' (type: {type(user_data.get('telegram_name'))})")
+        
         # Normalize phone in save_data before saving if present
         if 'phone' in save_data and save_data['phone']:
             save_data['phone'] = normalize_phone(save_data['phone'])
         
         # Map telegram_name to telegram_user for database (backward compatibility)
         if 'telegram_name' in save_data:
-            save_data['telegram_user'] = save_data.pop('telegram_name')
+            telegram_name_value = save_data.pop('telegram_name')
+            logger.info(f"[ADD_SAVE] Mapping telegram_name to telegram_user: '{telegram_name_value}'")
+            # Only set telegram_user if telegram_name has a value (not empty string or None)
+            if telegram_name_value:
+                save_data['telegram_user'] = telegram_name_value
+                logger.info(f"[ADD_SAVE] Set telegram_user = '{telegram_name_value}'")
+            else:
+                logger.warning(f"[ADD_SAVE] telegram_name is empty/None, not setting telegram_user")
+        else:
+            logger.warning(f"[ADD_SAVE] telegram_name not found in save_data")
         
+        logger.info(f"[ADD_SAVE] Final save_data keys: {list(save_data.keys())}")
+        if 'telegram_user' in save_data:
+            logger.info(f"[ADD_SAVE] telegram_user value: '{save_data.get('telegram_user')}' (type: {type(save_data.get('telegram_user'))})")
+        else:
+            logger.warning(f"[ADD_SAVE] telegram_user not in save_data after mapping")
+        
+        logger.info(f"[ADD_SAVE] Inserting data to database: {save_data}")
         response = client.table(TABLE_NAME).insert(save_data).execute()
+        
+        logger.info(f"[ADD_SAVE] Database response: {response.data if response.data else 'No data returned'}")
+        if response.data and len(response.data) > 0:
+            saved_telegram_user = response.data[0].get('telegram_user')
+            logger.info(f"[ADD_SAVE] Saved telegram_user in DB: '{saved_telegram_user}' (type: {type(saved_telegram_user)})")
         
         if response.data:
             # Show success message with entered data
