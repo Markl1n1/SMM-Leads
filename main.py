@@ -1695,7 +1695,7 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Для обязательных полей (fullname, manager_name) не показываем требования к формату
             if field_name == 'manager_name':
-                message = f"❌ Поле не может быть пустым.\n\n📝 Введите стейдж менеджера:\n*Так менеджер записан в отчётности"
+                message = f"❌ Поле не может быть пустым.\n\n📝 Введите стейдж менеджера:\n\n ⚠️ Так менеджер записан в отчётности"
                 use_html = False
             elif field_name == 'fullname':
                 message = f"❌ Поле не может быть пустым.\n\n📝 Введите {field_label}:"
@@ -1755,7 +1755,7 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Для обязательных полей (fullname, manager_name) не показываем требования к формату
         if next_field == 'manager_name':
-            message = f"{progress_text}📝 Введите стейдж менеджера:\n*Так менеджер записан в отчётности"
+            message = f"{progress_text}📝 Введите стейдж менеджера:\n\n ⚠️ Так менеджер записан в отчётности"
         elif next_field == 'fullname':
             message = f"{progress_text}📝 Введите {field_label}:"
         else:
@@ -1949,7 +1949,7 @@ async def add_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Для обязательных полей (fullname, manager_name) не показываем требования к формату
         if next_field == 'manager_name':
-            message = f"{progress_text}📝 Введите стейдж менеджера:\n*Так менеджер записан в отчётности"
+            message = f"{progress_text}📝 Введите стейдж менеджера:\n\n ⚠️ Так менеджер записан в отчётности"
         elif next_field == 'fullname':
             message = f"{progress_text}📝 Введите {field_label}:"
         else:
@@ -2006,7 +2006,7 @@ async def add_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Для обязательных полей (fullname, manager_name) не показываем требования к формату
         if prev_field == 'manager_name':
-            message = f"{progress_text}📝 Введите стейдж менеджера:\n*Так менеджер записан в отчётности"
+            message = f"{progress_text}📝 Введите стейдж менеджера:\n\n ⚠️ Так менеджер записан в отчётности"
         elif prev_field == 'fullname':
             message = f"{progress_text}📝 Введите {field_label}:"
         else:
@@ -2061,7 +2061,7 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
         await query.edit_message_text(
             f"{progress_text}❌ <b>Ошибка:</b> {field_label} обязателен для заполнения!\n\n"
-            f"📝 Введите стейдж менеджера:\n*Так менеджер записан в отчётности",
+            f"📝 Введите стейдж менеджера:\n\n ⚠️ Так менеджер записан в отчётности",
             reply_markup=get_navigation_keyboard(is_optional=False, show_back=True),
             parse_mode='HTML'
         )
