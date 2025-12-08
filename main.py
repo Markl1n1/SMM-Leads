@@ -601,6 +601,13 @@ def get_check_menu_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_check_back_keyboard():
+    """Create keyboard with only 'Back' button for check input prompts"""
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад", callback_data="check_menu")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # Add menu keyboard
 def get_add_menu_keyboard():
     """Create add menu keyboard"""
@@ -1036,12 +1043,18 @@ async def check_telegram_callback(update: Update, context: ContextTypes.DEFAULT_
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text("📱 Введите Имя пользователя Telegram для проверки:")
+        await query.edit_message_text(
+            "📱 Введите Имя пользователя Telegram для проверки:",
+            reply_markup=get_check_back_keyboard()
+        )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_telegram_callback: {e}")
         if query.message:
-            await query.message.reply_text("📱 Введите Имя пользователя Telegram для проверки:")
+            await query.message.reply_text(
+                "📱 Введите Имя пользователя Telegram для проверки:",
+                reply_markup=get_check_back_keyboard()
+            )
         else:
             logger.error("check_telegram_callback: query.message is None")
             return ConversationHandler.END
@@ -1068,12 +1081,18 @@ async def check_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_T
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text("🔗 Введите Facebook Ссылка для проверки:")
+        await query.edit_message_text(
+            "🔗 Введите Facebook Ссылка для проверки:",
+            reply_markup=get_check_back_keyboard()
+        )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_fb_link_callback: {e}")
         if query.message:
-            await query.message.reply_text("🔗 Введите Facebook Ссылка для проверки:")
+            await query.message.reply_text(
+                "🔗 Введите Facebook Ссылка для проверки:",
+                reply_markup=get_check_back_keyboard()
+            )
         else:
             logger.error("check_fb_link_callback: query.message is None")
             return ConversationHandler.END
@@ -1100,12 +1119,18 @@ async def check_phone_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text("🔢 Введите номер телефона для проверки:")
+        await query.edit_message_text(
+            "🔢 Введите номер телефона для проверки:",
+            reply_markup=get_check_back_keyboard()
+        )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_phone_callback: {e}")
         if query.message:
-            await query.message.reply_text("🔢 Введите номер телефона для проверки:")
+            await query.message.reply_text(
+                "🔢 Введите номер телефона для проверки:",
+                reply_markup=get_check_back_keyboard()
+            )
         else:
             logger.error("check_phone_callback: query.message is None")
             return ConversationHandler.END
@@ -1132,12 +1157,18 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text("👤 Введите имя клиента (или фамилию):")
+        await query.edit_message_text(
+            "👤 Введите имя клиента (или фамилию):",
+            reply_markup=get_check_back_keyboard()
+        )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_fullname_callback: {e}")
         if query.message:
-            await query.message.reply_text("👤 Введите имя клиента (или фамилию):")
+            await query.message.reply_text(
+                "👤 Введите имя клиента (или фамилию):",
+                reply_markup=get_check_back_keyboard()
+            )
         else:
             logger.error("check_fullname_callback: query.message is None")
             return ConversationHandler.END
@@ -1679,11 +1710,17 @@ async def check_telegram_id_callback(update: Update, context: ContextTypes.DEFAU
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text("🆔 Введите Telegram ID для проверки:")
+        await query.edit_message_text(
+            "🆔 Введите Telegram ID для проверки:",
+            reply_markup=get_check_back_keyboard()
+        )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_telegram_id_callback: {e}")
-        await query.message.reply_text("🆔 Введите Telegram ID для проверки:")
+        await query.message.reply_text(
+            "🆔 Введите Telegram ID для проверки:",
+            reply_markup=get_check_back_keyboard()
+        )
     
     return CHECK_BY_TELEGRAM_ID
 
