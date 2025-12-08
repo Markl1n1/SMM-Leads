@@ -678,34 +678,63 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /q command - return to main menu from any state"""
     try:
         user_id = update.effective_user.id
-        logger.info(f"[QUIT] Clearing all conversation state for user {user_id}")
+        update_type = "message" if update.message else "callback_query" if update.callback_query else "unknown"
+        logger.info(f"[QUIT] /q command received from user {user_id} (update_type: {update_type})")
+        logger.info(f"[QUIT] Context keys before clear: {list(context.user_data.keys()) if context.user_data else 'empty'}")
         
         # Clear all conversation state including internal ConversationHandler keys
         clear_all_conversation_state(context, user_id)
+        
+        logger.info(f"[QUIT] Context keys after clear: {list(context.user_data.keys()) if context.user_data else 'empty'}")
         
         # Show main menu FIRST (fast response)
         welcome_message = (
             "👋 Главное меню\n\n"
             "Выберите действие:"
         )
-        sent_message = await update.message.reply_text(
-            welcome_message,
-            reply_markup=get_main_menu_keyboard()
-        )
+        
+        # Handle both message and callback_query
+        if update.message:
+            sent_message = await update.message.reply_text(
+                welcome_message,
+                reply_markup=get_main_menu_keyboard()
+            )
+        elif update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            try:
+                await query.edit_message_text(
+                    welcome_message,
+                    reply_markup=get_main_menu_keyboard()
+                )
+            except Exception as e:
+                # If edit fails, send new message
+                logger.warning(f"[QUIT] Could not edit message: {e}")
+                if query.message:
+                    await query.message.reply_text(
+                        welcome_message,
+                        reply_markup=get_main_menu_keyboard()
+                    )
+        else:
+            logger.error(f"[QUIT] No message or callback_query in update")
         
         # Clean up messages AFTER showing menu (in background, don't wait)
         # This ensures fast response to user
         # Use application.create_task to ensure it runs in the correct event loop
-        context.application.create_task(cleanup_all_messages_before_main_menu(update, context))
+        if update.message or update.callback_query:
+            context.application.create_task(cleanup_all_messages_before_main_menu(update, context))
         
         return ConversationHandler.END
     except Exception as e:
-        logger.error(f"Error in quit_command: {e}", exc_info=True)
+        logger.error(f"[QUIT] Error in quit_command: {e}", exc_info=True)
         try:
-            await update.message.reply_text(
-                "❌ Произошла ошибка. Попробуйте позже.",
-                reply_markup=get_main_menu_keyboard()
-            )
+            if update.message:
+                await update.message.reply_text(
+                    "❌ Произошла ошибка. Попробуйте позже.",
+                    reply_markup=get_main_menu_keyboard()
+                )
+            elif update.callback_query:
+                await update.callback_query.answer("❌ Произошла ошибка. Попробуйте позже.", show_alert=True)
         except:
             pass
         return ConversationHandler.END
@@ -825,6 +854,27 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
     """Handle callback queries that don't match any pattern"""
     query = update.callback_query
     if query:
+        callback_data = query.data if query.data else ""
+        user_id = query.from_user.id if query.from_user else None
+        
+        # Check if we're in a stale ConversationHandler state
+        # If so, clear state and don't show error (might be from previous conversation)
+        if context.user_data:
+            has_conversation_keys = any(key.startswith('_conversation_') for key in context.user_data.keys())
+            if has_conversation_keys:
+                logger.warning(f"[UNKNOWN_CALLBACK] Stale ConversationHandler state detected for callback '{callback_data}'. Clearing state for user {user_id}")
+                if user_id:
+                    clear_all_conversation_state(context, user_id)
+                # Don't show error for stale callbacks - just answer silently
+                try:
+                    await query.answer()
+                except:
+                    pass
+                return ConversationHandler.END
+        
+        # Log the unknown callback for debugging
+        logger.warning(f"[UNKNOWN_CALLBACK] Unknown callback query: '{callback_data}' from user {user_id}")
+        
         try:
             await query.answer("⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
             if query.message:
@@ -1147,6 +1197,21 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Universal check function
 async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, field_name: str, field_label: str, current_state: int):
     """Universal function to check by any field"""
+    # Validate that update has a message
+    if not update.message:
+        logger.error(f"[CHECK_BY_FIELD] update.message is None for field '{field_name}'. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        logger.error(f"[CHECK_BY_FIELD] Context keys: {list(context.user_data.keys()) if context.user_data else 'empty'}")
+        # Try to get user_id from callback_query if available
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id:
+            logger.error(f"[CHECK_BY_FIELD] User ID: {user_id}")
+        # Return END to exit conversation
+        return ConversationHandler.END
+    
+    if not update.message.text:
+        logger.error(f"[CHECK_BY_FIELD] update.message.text is None for field '{field_name}'")
+        return ConversationHandler.END
+    
     search_value = update.message.text.strip()
     
     if not search_value:
@@ -1166,6 +1231,17 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
     # Get database column name
     db_field_name = FIELD_NAME_MAPPING.get(field_name, field_name)
     
+    # Add detailed logging for all search types
+    search_type_map = {
+        'fullname': 'FULLNAME SEARCH',
+        'phone': 'PHONE SEARCH',
+        'facebook_link': 'FACEBOOK SEARCH',
+        'telegram_user': 'TELEGRAM USER SEARCH',
+        'telegram_id': 'TELEGRAM ID SEARCH'
+    }
+    search_type = search_type_map.get(field_name, f'{field_name.upper()} SEARCH')
+    logger.info(f"[{search_type}] Starting search with value: '{search_value}' (length: {len(search_value)}, type: {type(search_value)})")
+    
     # Validate minimum length for search
     if field_name == "phone":
         normalized = normalize_phone(search_value)
@@ -1178,12 +1254,14 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             await save_check_message(update, context, sent_message.message_id)
             return ConversationHandler.END
         search_value = normalized
+        logger.info(f"[{search_type}] Normalized phone: '{normalized}'")
     
     # Normalize Facebook link if checking by facebook_link
     elif field_name == "facebook_link":
         # Use validate_facebook_link to normalize the link (same logic as when adding)
         is_valid, error_msg, normalized = validate_facebook_link(search_value)
         if not is_valid:
+            logger.warning(f"[{search_type}] ❌ Validation failed: {error_msg}")
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
             sent_message = await update.message.reply_text(
                 f"❌ {error_msg}",
@@ -1193,12 +1271,14 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             await save_check_message(update, context, sent_message.message_id)
             return ConversationHandler.END
         search_value = normalized
+        logger.info(f"[{search_type}] Normalized Facebook link: '{normalized}'")
     
     # Normalize Telegram Name if checking by telegram_user
     elif field_name == "telegram_user":
         # Use same normalization as when adding (remove @, spaces)
         is_valid, error_msg, normalized = validate_telegram_name(search_value)
         if not is_valid:
+            logger.warning(f"[{search_type}] ❌ Validation failed: {error_msg}")
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
             sent_message = await update.message.reply_text(
                 f"❌ {error_msg}",
@@ -1207,6 +1287,7 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             await save_check_message(update, context, sent_message.message_id)
             return ConversationHandler.END
         search_value = normalized
+        logger.info(f"[{search_type}] Normalized Telegram username: '{normalized}'")
     
     # Get Supabase client (for all fields, not just phone)
     client = get_supabase_client()
@@ -1244,7 +1325,10 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             )
         else:
             # For other fields: exact match, limit to 50 results
+            logger.info(f"[{search_type}] Executing query: SELECT * FROM {TABLE_NAME} WHERE {db_field_name} = '{search_value}' LIMIT 50")
             response = client.table(TABLE_NAME).select("*").eq(db_field_name, search_value).limit(50).execute()
+            logger.info(f"[{search_type}] Query executed. Response type: {type(response)}, has data: {hasattr(response, 'data')}")
+            logger.info(f"[{search_type}] Response.data length: {len(response.data) if hasattr(response, 'data') and response.data else 0}")
         
         # Field labels mapping (Russian) - use database column names
         field_labels = {
@@ -1341,6 +1425,7 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
             reply_markup = InlineKeyboardMarkup(keyboard)
         else:
+            logger.warning(f"[{search_type}] ❌ No results found for {db_field_name} = '{search_value}'")
             message = "❌ <b>Клиент не найден</b>."
             reply_markup = get_main_menu_keyboard()
         
@@ -1353,7 +1438,7 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
         await save_check_message(update, context, sent_message.message_id)
         
     except Exception as e:
-        logger.error(f"Error checking by {field_name}: {e}", exc_info=True)
+        logger.error(f"[{search_type}] ❌ Error checking by {field_name}: {e}", exc_info=True)
         error_msg = get_user_friendly_error(e, "проверке")
         sent_message = await update.message.reply_text(
             error_msg,
@@ -1366,6 +1451,19 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
 
 async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check by fullname using contains search with limit of 10 results"""
+    # Validate that update has a message
+    if not update.message:
+        logger.error(f"[FULLNAME SEARCH] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        logger.error(f"[FULLNAME SEARCH] Context keys: {list(context.user_data.keys()) if context.user_data else 'empty'}")
+        user_id = update.effective_user.id if update.effective_user else None
+        if user_id:
+            logger.error(f"[FULLNAME SEARCH] User ID: {user_id}")
+        return ConversationHandler.END
+    
+    if not update.message.text:
+        logger.error(f"[FULLNAME SEARCH] update.message.text is None")
+        return ConversationHandler.END
+    
     search_value = update.message.text.strip()
     
     logger.info(f"[FULLNAME SEARCH] Starting search with value: '{search_value}' (length: {len(search_value)}, type: {type(search_value)})")
@@ -1552,9 +1650,17 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Check input handlers
 async def check_telegram_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle telegram username input for checking"""
+    if not update.message:
+        logger.error(f"[CHECK_TELEGRAM_INPUT] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        return ConversationHandler.END
     return await check_by_field(update, context, "telegram_user", "Имя пользователя Telegram", CHECK_BY_TELEGRAM)
 
 async def check_fb_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Facebook link input for checking"""
+    if not update.message:
+        logger.error(f"[CHECK_FB_LINK_INPUT] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        return ConversationHandler.END
     return await check_by_field(update, context, "facebook_link", "Facebook Ссылка", CHECK_BY_FB_LINK)
 
 async def check_telegram_id_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1582,12 +1688,24 @@ async def check_telegram_id_callback(update: Update, context: ContextTypes.DEFAU
     return CHECK_BY_TELEGRAM_ID
 
 async def check_telegram_id_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Telegram ID input for checking"""
+    if not update.message:
+        logger.error(f"[CHECK_TELEGRAM_ID_INPUT] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        return ConversationHandler.END
     return await check_by_field(update, context, "telegram_id", "Telegram ID", CHECK_BY_TELEGRAM_ID)
 
 async def check_phone_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle phone input for checking"""
+    if not update.message:
+        logger.error(f"[CHECK_PHONE_INPUT] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        return ConversationHandler.END
     return await check_by_field(update, context, "phone", "Номер телефона", CHECK_BY_PHONE)
 
 async def check_fullname_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle fullname input for checking"""
+    if not update.message:
+        logger.error(f"[CHECK_FULLNAME_INPUT] update.message is None. Update type: {type(update)}, has callback_query: {update.callback_query is not None}")
+        return ConversationHandler.END
     return await check_by_fullname(update, context)
 
 # Old add_field_callback removed - using sequential flow now
