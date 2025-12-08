@@ -1605,8 +1605,30 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    field_name = context.user_data.get('current_field')
+    
+    # Determine field_name from current_state FIRST, then fallback to context.user_data
+    # This ensures we use the correct field based on ConversationHandler state
     current_state = context.user_data.get('current_state', ADD_FULLNAME)
+    
+    # Map ConversationHandler states to field names
+    state_to_field = {
+        ADD_FULLNAME: 'fullname',
+        ADD_MANAGER_NAME: 'manager_name',
+        ADD_PHONE: 'phone',
+        ADD_FB_LINK: 'facebook_link',
+        ADD_TELEGRAM_NAME: 'telegram_name',
+        ADD_TELEGRAM_ID: 'telegram_id',
+    }
+    
+    # Get field_name from state first (more reliable)
+    field_name = state_to_field.get(current_state)
+    
+    # Fallback to context.user_data if state mapping doesn't work
+    if not field_name:
+        field_name = context.user_data.get('current_field')
+    
+    # Log for debugging
+    logger.info(f"[ADD_FIELD] Processing input - current_state: {current_state}, field_name from state: {state_to_field.get(current_state)}, field_name from user_data: {context.user_data.get('current_field')}, field_name determined: {field_name}, text: '{text[:50]}...'")
     
     # Update access time
     user_data_store_access_time[user_id] = time.time()
