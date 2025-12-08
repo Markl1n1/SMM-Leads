@@ -960,6 +960,18 @@ async def check_telegram_callback(update: Update, context: ContextTypes.DEFAULT_
     
     await query.answer()
     
+    # Explicitly clear any residual conversation state to ensure clean entry
+    # This prevents issues when re-entering after /q
+    if context.user_data:
+        keys_to_remove = [
+            'current_field', 'current_state', 'add_step', 'editing_lead_id',
+            'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+            'check_results', 'selected_lead_id', 'original_lead_data'
+        ]
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
+    
     # Clean up old check messages if any
     await cleanup_check_messages(update, context)
     
@@ -984,6 +996,18 @@ async def check_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     
     await query.answer()
+    
+    # Explicitly clear any residual conversation state to ensure clean entry
+    # This prevents issues when re-entering after /q
+    if context.user_data:
+        keys_to_remove = [
+            'current_field', 'current_state', 'add_step', 'editing_lead_id',
+            'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+            'check_results', 'selected_lead_id', 'original_lead_data'
+        ]
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
     
     # Clean up old check messages if any
     await cleanup_check_messages(update, context)
@@ -1010,6 +1034,18 @@ async def check_phone_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await query.answer()
     
+    # Explicitly clear any residual conversation state to ensure clean entry
+    # This prevents issues when re-entering after /q
+    if context.user_data:
+        keys_to_remove = [
+            'current_field', 'current_state', 'add_step', 'editing_lead_id',
+            'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+            'check_results', 'selected_lead_id', 'original_lead_data'
+        ]
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
+    
     # Clean up old check messages if any
     await cleanup_check_messages(update, context)
     
@@ -1034,6 +1070,18 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
         return ConversationHandler.END
     
     await query.answer()
+    
+    # Explicitly clear any residual conversation state to ensure clean entry
+    # This prevents issues when re-entering after /q
+    if context.user_data:
+        keys_to_remove = [
+            'current_field', 'current_state', 'add_step', 'editing_lead_id',
+            'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+            'check_results', 'selected_lead_id', 'original_lead_data'
+        ]
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
     
     # Clean up old check messages if any
     await cleanup_check_messages(update, context)
@@ -1063,8 +1111,11 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # This ensures we can start a new conversation even if user is in another ConversationHandler state
         if context.user_data:
             # Keep only essential data, clear conversation states
-            keys_to_remove = ['current_field', 'current_state', 'add_step', 'editing_lead_id', 
-                            'last_check_messages', 'add_message_ids']
+            keys_to_remove = [
+                'current_field', 'current_state', 'add_step', 'editing_lead_id',
+                'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+                'check_results', 'selected_lead_id', 'original_lead_data'
+            ]
             for key in keys_to_remove:
                 if key in context.user_data:
                     del context.user_data[key]
@@ -1521,6 +1572,18 @@ async def check_telegram_id_callback(update: Update, context: ContextTypes.DEFAU
     """Entry point for check by telegram ID conversation"""
     query = update.callback_query
     await query.answer()
+    
+    # Explicitly clear any residual conversation state to ensure clean entry
+    # This prevents issues when re-entering after /q
+    if context.user_data:
+        keys_to_remove = [
+            'current_field', 'current_state', 'add_step', 'editing_lead_id',
+            'last_check_messages', 'add_message_ids', 'check_by', 'check_value',
+            'check_results', 'selected_lead_id', 'original_lead_data'
+        ]
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
     
     # Clean up old check messages if any
     await cleanup_check_messages(update, context)
@@ -3188,7 +3251,12 @@ async def setup_webhook():
     """Set up the webhook for Telegram bot"""
     try:
         webhook_url = f"{WEBHOOK_URL}/webhook"
-        await telegram_app.bot.set_webhook(url=webhook_url)
+        # Drop pending updates to clear old states on deploy
+        await telegram_app.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True  # Сбрасывает все ожидающие обновления
+        )
+        logger.info("Webhook set successfully with pending updates dropped")
     except Exception as e:
         logger.error(f"Error setting webhook: {e}")
 
@@ -3198,8 +3266,12 @@ telegram_event_loop = None
 
 def initialize_telegram_app():
     """Initialize Telegram app - called on module import (needed for gunicorn)"""
-    global telegram_app, telegram_event_loop
+    global telegram_app, telegram_event_loop, user_data_store, user_data_store_access_time
     
+    # Clear all user data stores on startup (fresh start after deploy)
+    user_data_store.clear()
+    user_data_store_access_time.clear()
+    logger.info("Cleared user_data_store and user_data_store_access_time on startup")
     
     # Validate environment variables first
     if not TELEGRAM_BOT_TOKEN:
