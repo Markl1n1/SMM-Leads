@@ -35,10 +35,13 @@ import time
 import signal
 import sys
 import threading
+import asyncio
 from functools import wraps
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, ConversationHandler
+from telegram.error import TimedOut, NetworkError, RetryAfter
+from telegram.request import HTTPXRequest
 
 from supabase import create_client, Client
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -99,6 +102,34 @@ def retry_supabase_query(max_retries=3, delay=1, backoff=2):
             raise last_exception
         return wrapper
     return decorator
+
+async def retry_telegram_api(func, max_retries=3, delay=1, backoff=2, *args, **kwargs):
+    """Retry Telegram API calls with exponential backoff"""
+    last_exception = None
+    current_delay = delay
+    
+    for attempt in range(max_retries):
+        try:
+            return await func(*args, **kwargs)
+        except (TimedOut, NetworkError) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                logger.warning(f"Telegram API call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {current_delay}s...")
+                await asyncio.sleep(current_delay)
+                current_delay *= backoff
+            else:
+                logger.error(f"Telegram API call failed after {max_retries} attempts: {e}")
+        except RetryAfter as e:
+            # Telegram rate limit - wait for the specified time
+            wait_time = e.retry_after
+            logger.warning(f"Rate limited by Telegram. Waiting {wait_time}s...")
+            await asyncio.sleep(wait_time)
+            # Retry once more after rate limit
+            if attempt < max_retries - 1:
+                return await func(*args, **kwargs)
+            raise
+    
+    raise last_exception
 
 def get_supabase_client():
     """Initialize and return Supabase client"""
@@ -665,8 +696,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👋 Добро пожаловать в ClientsBot!\n\n"
             "Выберите действие:"
         )
-        await update.message.reply_text(
-            welcome_message,
+        await retry_telegram_api(
+            update.message.reply_text,
+            text=welcome_message,
             reply_markup=get_main_menu_keyboard()
         )
         
@@ -674,8 +706,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in start_command: {e}", exc_info=True)
         try:
-            await update.message.reply_text(
-                "❌ Произошла ошибка при обработке команды. Попробуйте позже."
+            await retry_telegram_api(
+                update.message.reply_text,
+                text="❌ Произошла ошибка при обработке команды. Попробуйте позже."
             )
         except:
             pass
@@ -702,24 +735,27 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Handle both message and callback_query
         if update.message:
-            sent_message = await update.message.reply_text(
-                welcome_message,
+            sent_message = await retry_telegram_api(
+                update.message.reply_text,
+                text=welcome_message,
                 reply_markup=get_main_menu_keyboard()
             )
         elif update.callback_query:
             query = update.callback_query
-            await query.answer()
+            await retry_telegram_api(query.answer)
             try:
-                await query.edit_message_text(
-                    welcome_message,
+                await retry_telegram_api(
+                    query.edit_message_text,
+                    text=welcome_message,
                     reply_markup=get_main_menu_keyboard()
                 )
             except Exception as e:
                 # If edit fails, send new message
                 logger.warning(f"[QUIT] Could not edit message: {e}")
                 if query.message:
-                    await query.message.reply_text(
-                        welcome_message,
+                    await retry_telegram_api(
+                        query.message.reply_text,
+                        text=welcome_message,
                         reply_markup=get_main_menu_keyboard()
                     )
         else:
@@ -736,12 +772,13 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"[QUIT] Error in quit_command: {e}", exc_info=True)
         try:
             if update.message:
-                await update.message.reply_text(
-                    "❌ Произошла ошибка. Попробуйте позже.",
+                await retry_telegram_api(
+                    update.message.reply_text,
+                    text="❌ Произошла ошибка. Попробуйте позже.",
                     reply_markup=get_main_menu_keyboard()
                 )
             elif update.callback_query:
-                await update.callback_query.answer("❌ Произошла ошибка. Попробуйте позже.", show_alert=True)
+                await retry_telegram_api(update.callback_query.answer, text="❌ Произошла ошибка. Попробуйте позже.", show_alert=True)
         except:
             pass
         return ConversationHandler.END
@@ -750,7 +787,7 @@ async def quit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle check_menu callback - return to check menu and end any active ConversationHandler"""
     query = update.callback_query
-    await query.answer()
+    await retry_telegram_api(query.answer)
     
     user_id = query.from_user.id
     logger.info(f"[CHECK_MENU] Returning to check menu. Clearing conversation state for user {user_id}")
@@ -762,8 +799,9 @@ async def check_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Clean up old check messages
     await cleanup_check_messages(update, context)
     
-    await query.edit_message_text(
-        "✅ Проверить клиента\n\nВыберите способ проверки:",
+    await retry_telegram_api(
+        query.edit_message_text,
+        text="✅ Проверить клиента\n\nВыберите способ проверки:",
         reply_markup=get_check_menu_keyboard()
     )
     
@@ -772,7 +810,7 @@ async def check_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks for menu navigation"""
     query = update.callback_query
-    await query.answer()
+    await retry_telegram_api(query.answer)
     
     data = query.data
     
@@ -792,8 +830,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         try:
             # Show main menu FIRST (fast response)
-            await query.edit_message_text(
-                "👋 Главное меню\n\nВыберите действие:",
+            await retry_telegram_api(
+                query.edit_message_text,
+                text="👋 Главное меню\n\nВыберите действие:",
                 reply_markup=get_main_menu_keyboard()
             )
             
@@ -811,8 +850,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If edit fails (message was deleted), send new message
             if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
                 try:
-                    await query.message.reply_text(
-                        "👋 Главное меню\n\nВыберите действие:",
+                    await retry_telegram_api(
+                        query.message.reply_text,
+                        text="👋 Главное меню\n\nВыберите действие:",
                         reply_markup=get_main_menu_keyboard()
                     )
                     # Clean up in background with delay
@@ -825,7 +865,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Error sending reply message: {reply_error}", exc_info=True)
                     # Last resort: try to send without cleanup
                     try:
-                        await context.bot.send_message(
+                        await retry_telegram_api(
+                            context.bot.send_message,
                             chat_id=query.message.chat_id,
                             text="👋 Главное меню\n\nВыберите действие:",
                             reply_markup=get_main_menu_keyboard()
@@ -840,8 +881,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await check_menu_callback(update, context)
     
     elif data == "add_menu":
-        await query.edit_message_text(
-            "➕ Добавить клиента\n\nВыберите способ добавления:",
+        await retry_telegram_api(
+            query.edit_message_text,
+            text="➕ Добавить клиента\n\nВыберите способ добавления:",
             reply_markup=get_add_menu_keyboard()
         )
     
@@ -855,20 +897,22 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return result
         except Exception as e:
             logger.error(f"Error in add_new fallback handler: {e}", exc_info=True)
-            await query.answer("❌ Произошла ошибка. Попробуйте снова.")
-            await query.edit_message_text(
-                "❌ Произошла ошибка при запуске добавления лида.\n\n"
+            await retry_telegram_api(query.answer, text="❌ Произошла ошибка. Попробуйте снова.")
+            await retry_telegram_api(
+                query.edit_message_text,
+                text="❌ Произошла ошибка при запуске добавления лида.\n\n"
                 "Попробуйте снова или обратитесь к администратору.",
                 reply_markup=get_main_menu_keyboard()
             )
     else:
         # Unknown callback data - should not happen, but handle gracefully
         logger.warning(f"Unknown callback data received: {data}")
-        await query.answer("⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
+        await retry_telegram_api(query.answer, text="⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
         try:
             if query.message:
-                await query.edit_message_text(
-                    "❌ Неизвестная команда.\n\n"
+                await retry_telegram_api(
+                    query.edit_message_text,
+                    text="❌ Неизвестная команда.\n\n"
                     "Используйте кнопки меню для навигации.",
                     reply_markup=get_main_menu_keyboard()
                 )
@@ -893,7 +937,7 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     clear_all_conversation_state(context, user_id)
                 # Don't show error for stale callbacks - just answer silently
                 try:
-                    await query.answer()
+                    await retry_telegram_api(query.answer)
                 except:
                     pass
                 return ConversationHandler.END
@@ -902,10 +946,11 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
         logger.warning(f"[UNKNOWN_CALLBACK] Unknown callback query: '{callback_data}' from user {user_id}")
         
         try:
-            await query.answer("⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
+            await retry_telegram_api(query.answer, text="⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
             if query.message:
-                await query.edit_message_text(
-                    "❌ Неизвестная команда.\n\n"
+                await retry_telegram_api(
+                    query.edit_message_text,
+                    text="❌ Неизвестная команда.\n\n"
                     "Используйте кнопки меню для навигации.",
                     reply_markup=get_main_menu_keyboard()
                 )
@@ -1087,7 +1132,7 @@ async def check_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_T
         logger.error("check_fb_link_callback: query is None")
         return ConversationHandler.END
     
-    await query.answer()
+    await retry_telegram_api(query.answer)
     
     user_id = query.from_user.id
     logger.info(f"[CHECK_FB_LINK] Clearing state before entry for user {user_id}")
@@ -1100,16 +1145,18 @@ async def check_fb_link_callback(update: Update, context: ContextTypes.DEFAULT_T
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text(
-            "🔗 Введите Facebook Ссылка для проверки:",
+        await retry_telegram_api(
+            query.edit_message_text,
+            text="🔗 Введите Facebook Ссылка для проверки:",
             reply_markup=get_check_back_keyboard()
         )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_fb_link_callback: {e}")
         if query.message:
-            await query.message.reply_text(
-                "🔗 Введите Facebook Ссылка для проверки:",
+            await retry_telegram_api(
+                query.message.reply_text,
+                text="🔗 Введите Facebook Ссылка для проверки:",
                 reply_markup=get_check_back_keyboard()
             )
         else:
@@ -1125,7 +1172,7 @@ async def check_phone_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error("check_phone_callback: query is None")
         return ConversationHandler.END
     
-    await query.answer()
+    await retry_telegram_api(query.answer)
     
     user_id = query.from_user.id
     logger.info(f"[CHECK_PHONE] Clearing state before entry for user {user_id}")
@@ -1138,16 +1185,18 @@ async def check_phone_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text(
-            "🔢 Введите номер телефона для проверки:",
+        await retry_telegram_api(
+            query.edit_message_text,
+            text="🔢 Введите номер телефона для проверки:",
             reply_markup=get_check_back_keyboard()
         )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_phone_callback: {e}")
         if query.message:
-            await query.message.reply_text(
-                "🔢 Введите номер телефона для проверки:",
+            await retry_telegram_api(
+                query.message.reply_text,
+                text="🔢 Введите номер телефона для проверки:",
                 reply_markup=get_check_back_keyboard()
             )
         else:
@@ -1163,7 +1212,7 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
         logger.error("check_fullname_callback: query is None")
         return ConversationHandler.END
     
-    await query.answer()
+    await retry_telegram_api(query.answer)
     
     user_id = query.from_user.id
     logger.info(f"[CHECK_FULLNAME] Clearing state before entry for user {user_id}")
@@ -1176,16 +1225,18 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
     await cleanup_check_messages(update, context)
     
     try:
-        await query.edit_message_text(
-            "👤 Введите имя клиента (или фамилию):",
+        await retry_telegram_api(
+            query.edit_message_text,
+            text="👤 Введите имя клиента (или фамилию):",
             reply_markup=get_check_back_keyboard()
         )
     except Exception as e:
         # If message can't be edited (e.g., already deleted), send new message
         logger.warning(f"Could not edit message in check_fullname_callback: {e}")
         if query.message:
-            await query.message.reply_text(
-                "👤 Введите имя клиента (или фамилию):",
+            await retry_telegram_api(
+                query.message.reply_text,
+                text="👤 Введите имя клиента (или фамилию):",
                 reply_markup=get_check_back_keyboard()
             )
         else:
@@ -1222,8 +1273,9 @@ async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Убираем описание для первого шага
         message = f"<b>Шаг {current_step} из {total_steps}</b>\n\n📝 Введите {field_label}:"
         
-        await query.edit_message_text(
-            message,
+        await retry_telegram_api(
+            query.edit_message_text,
+            text=message,
             reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
             parse_mode='HTML'
         )
@@ -2089,8 +2141,9 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if update.callback_query.message:
                 await save_add_message(update, context, update.callback_query.message.message_id)
         elif update.message:
-            sent_message = await update.message.reply_text(
-                message,
+            sent_message = await retry_telegram_api(
+                update.message.reply_text,
+                text=message,
                 reply_markup=get_navigation_keyboard(is_optional=is_optional, show_back=True),
                 parse_mode='HTML'
             )
@@ -3481,12 +3534,42 @@ def initialize_telegram_app():
     setup_thread.start()
     
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle errors in Telegram handlers"""
+    logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
+    
+    # Try to notify user if update is available
+    # Use direct calls without retry to avoid infinite recursion
+    if update and isinstance(update, Update):
+        try:
+            if update.message:
+                try:
+                    await update.message.reply_text(
+                        "⚠️ Произошла временная ошибка. Попробуйте снова через несколько секунд."
+                    )
+                except Exception:
+                    pass  # Silently fail if we can't send error message
+            elif update.callback_query:
+                try:
+                    await update.callback_query.answer(
+                        text="⚠️ Временная ошибка. Попробуйте снова.",
+                        show_alert=True
+                    )
+                except Exception:
+                    pass  # Silently fail if we can't send error message
+        except Exception as e:
+            logger.error(f"Failed to send error message to user: {e}")
+
 def create_telegram_app():
     """Create and configure Telegram application"""
     global telegram_app
     
-    # Create application
-    telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    # Create application with timeout settings
+    request = HTTPXRequest(connection_pool_size=8, connect_timeout=10.0, read_timeout=10.0)
+    telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).build()
+    
+    # Add error handler FIRST (before other handlers)
+    telegram_app.add_error_handler(error_handler)
     
     # Add command handlers
     telegram_app.add_handler(CommandHandler("start", start_command))
