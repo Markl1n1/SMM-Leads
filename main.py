@@ -507,20 +507,25 @@ def detect_search_type(value: str) -> tuple[str, str]:
     """
     Automatically detect the type of search value.
     Returns: (field_type, normalized_value)
-    field_type can be: 'telegram_id', 'telegram_user', 'fullname', 'unknown'
+    field_type can be: 'facebook_link', 'telegram_id', 'telegram_user', 'fullname', 'unknown'
     """
     if not value:
         return 'unknown', ''
     
     value_stripped = value.strip()
     
-    # 1. Check for Telegram ID (only digits, minimum 5 digits for reliability)
+    # 1. Check for Facebook link FIRST (before other checks)
+    is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
+    if is_valid_fb:
+        return 'facebook_link', fb_normalized
+    
+    # 2. Check for Telegram ID (only digits, minimum 5 digits for reliability)
     if value_stripped.isdigit() and len(value_stripped) >= 5:
         normalized = normalize_telegram_id(value_stripped)
         if normalized:
             return 'telegram_id', normalized
     
-    # 2. Check for Telegram username (letters, digits, underscores, no spaces, may start with @)
+    # 3. Check for Telegram username (letters, digits, underscores, no spaces, may start with @)
     # Remove @ if present
     username_candidate = value_stripped.replace('@', '').strip()
     # Check if it contains only allowed characters for Telegram username
@@ -532,7 +537,7 @@ def detect_search_type(value: str) -> tuple[str, str]:
             if is_valid_tg:
                 return 'telegram_user', tg_normalized
     
-    # 3. Check for fullname (contains spaces or letters, not just digits)
+    # 4. Check for fullname (contains spaces or letters, not just digits)
     # If it contains spaces or has letters (not just digits), it's likely a name
     if ' ' in value_stripped or any(c.isalpha() for c in value_stripped):
         # Normalize text field
@@ -540,7 +545,7 @@ def detect_search_type(value: str) -> tuple[str, str]:
         if normalized and len(normalized) >= 3:  # Minimum 3 characters for name search
             return 'fullname', normalized
     
-    # 4. Unknown - cannot determine type
+    # 5. Unknown - cannot determine type
     return 'unknown', value_stripped
 
 def get_field_format_requirements(field_name: str) -> str:
@@ -3173,6 +3178,7 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message = "❌ <b>Клиент не найден</b>."
             reply_markup = get_main_menu_keyboard()
             photo_url = None
+            results = []  # Инициализируем results как пустой список, чтобы избежать ошибки в строке 3178
         
         # Send message with photo if available (only for single result)
         if len(results) == 1 and photo_url:
@@ -3302,7 +3308,11 @@ async def smart_check_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"[SMART_CHECK] Detected type: '{field_type}' for value: '{search_value}' (normalized: '{normalized_value}')")
     
     # Route to appropriate search function based on detected type
-    if field_type == 'telegram_id':
+    if field_type == 'facebook_link':
+        # Use existing check_by_field for Facebook link
+        return await check_by_field(update, context, "facebook_link", "Facebook Ссылка", SMART_CHECK_INPUT)
+    
+    elif field_type == 'telegram_id':
         # Use existing check_by_field for Telegram ID
         return await check_by_field(update, context, "telegram_id", "Telegram ID", SMART_CHECK_INPUT)
     
