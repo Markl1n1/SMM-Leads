@@ -2876,6 +2876,7 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             message = "❌ <b>Клиент не найден</b>."
             reply_markup = get_main_menu_keyboard()
             photo_url = None
+            results = []  # Инициализируем results как пустой список, чтобы избежать ошибки в строке 2881
         
         # Send message with photo if available (only for single result)
         if len(results) == 1 and photo_url:
