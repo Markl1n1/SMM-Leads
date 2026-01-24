@@ -2057,6 +2057,44 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
             # Return None to let ConversationHandler process it
             return None
         
+        # Special handling for add_skip, add_back, add_cancel - try to activate ConversationHandler
+        if callback_data in ["add_skip", "add_back", "add_cancel"]:
+            logger.info(f"[UNKNOWN_CALLBACK] {callback_data} callback not handled by ConversationHandler, checking for add state for user {user_id}")
+            # Check if user has add state initialized
+            current_state = context.user_data.get('current_state')
+            add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+            
+            if current_state in add_states and user_id in user_data_store:
+                logger.info(f"[UNKNOWN_CALLBACK] User {user_id} has add state {current_state}, trying to activate ConversationHandler")
+                # Clear stale ConversationHandler internal keys
+                if context.user_data:
+                    keys_to_remove = [key for key in context.user_data.keys() if key.startswith('_conversation_')]
+                    for key in keys_to_remove:
+                        del context.user_data[key]
+                # Answer callback and let ConversationHandler process it
+                try:
+                    await retry_telegram_api(query.answer)
+                except:
+                    pass
+                # Return None to let ConversationHandler process it
+                return None
+            else:
+                # No valid add state - clear and show main menu
+                logger.warning(f"[UNKNOWN_CALLBACK] {callback_data} callback but no valid add state for user {user_id}")
+                if user_id:
+                    clear_all_conversation_state(context, user_id)
+                try:
+                    await retry_telegram_api(query.answer, text="⚠️ Сессия истекла. Начните заново.", show_alert=True)
+                    if query.message:
+                        await retry_telegram_api(
+                            query.edit_message_text,
+                            text="⚠️ Сессия истекла.\n\nИспользуйте кнопки меню для навигации.",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                except:
+                    pass
+                return ConversationHandler.END
+        
         # Check if we're in a stale ConversationHandler state
         if context.user_data:
             has_conversation_keys = any(key.startswith('_conversation_') for key in context.user_data.keys())
