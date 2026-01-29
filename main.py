@@ -66,6 +66,9 @@ PORT = int(os.environ.get('PORT', 8000))  # Default port, usually set by Koyeb
 SUPABASE_LEADS_BUCKET = os.environ.get('SUPABASE_LEADS_BUCKET', 'Leads')  # Supabase Storage bucket name
 ENABLE_LEAD_PHOTOS = os.environ.get('ENABLE_LEAD_PHOTOS', 'true').lower() == 'true'  # Enable/disable photo uploads
 
+# PIN code configuration
+PIN_CODE = os.environ.get('PIN_CODE', '2025')  # Default PIN code, can be overridden via environment variable
+
 # Supabase client - thread-safe, can be used concurrently by multiple users
 supabase: Client = None
 # Separate client for Storage operations (uses service_role key to bypass RLS)
@@ -1920,9 +1923,7 @@ async def tag_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip()
     
-    # PIN code is "2025"
-    PIN_CODE = "2025"
-    
+    # PIN code from environment variable
     if text == PIN_CODE:
         # PIN is correct, reset attempt counter
         if 'pin_attempts' in context.user_data:
@@ -6834,9 +6835,7 @@ async def edit_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
-    # PIN code is "2025"
-    PIN_CODE = "2025"
-    
+    # PIN code from environment variable
     if text == PIN_CODE:
         # PIN is correct, reset attempt counter
         if 'pin_attempts' in context.user_data:
