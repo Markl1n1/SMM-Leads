@@ -327,6 +327,9 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     - https://www.facebook.com/profile/username → username
     - https://m.facebook.com/username → username
     - m.facebook.com/username → username
+    - 100009214290387 (14+ digits, pure Facebook ID) → 100009214290387
+    - markl1n (username without URL) → markl1n
+    - vania.goncear (username without URL) → vania.goncear
     """
     if not link:
         return False, "Facebook ссылка не может быть пустой", ""
@@ -336,6 +339,33 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     # Remove @ if present at the beginning
     if link_clean.startswith('@'):
         link_clean = link_clean[1:]
+    
+    # Check for pure numeric Facebook ID (14+ digits) - BEFORE checking URL patterns
+    # Facebook IDs are typically 14+ digits, while Telegram IDs are 10 digits
+    if link_clean.isdigit() and len(link_clean) >= 14:
+        return True, "", link_clean
+    
+    # Check for pure Facebook username (without URL prefix)
+    # Username contains letters, digits, dots, underscores, hyphens, no spaces
+    # Should not contain URL patterns
+    link_lower = link_clean.lower()
+    has_url_patterns = (
+        'facebook.com' in link_lower or
+        'http://' in link_lower or
+        'https://' in link_lower or
+        'www.' in link_lower
+    )
+    
+    if not has_url_patterns:
+        # Check if it looks like a username (alphanumeric + dots/underscores/hyphens, no spaces)
+        if link_clean and not ' ' in link_clean:
+            # Check if it contains at least one letter (usernames usually have letters)
+            has_letters = any(c.isalpha() for c in link_clean)
+            # Check if all characters are allowed for username (alphanumeric, dots, underscores, hyphens)
+            is_valid_username_format = all(c.isalnum() or c in ['.', '_', '-'] for c in link_clean)
+            
+            if has_letters and is_valid_username_format and len(link_clean) >= 3:
+                return True, "", link_clean
     
     # Check if it's a valid Facebook URL - support more formats
     # Accept: https://www.facebook.com/..., http://www.facebook.com/..., 
@@ -354,7 +384,6 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
     
     # Also check for formats without protocol explicitly
     if not is_facebook_url:
-        link_lower = link_clean.lower()
         if (link_lower.startswith('www.facebook.com/') or 
             link_lower.startswith('facebook.com/') or 
             link_lower.startswith('m.facebook.com/')):
@@ -498,16 +527,40 @@ def detect_search_type(value: str) -> tuple[str, str]:
     
     value_stripped = value.strip()
     
-    # 1. Check for Facebook link FIRST (before other checks)
+    # 1. Check for pure numeric IDs FIRST (before Facebook URL validation)
+    # Telegram ID = 10 digits, Facebook ID = 14+ digits
+    if value_stripped.isdigit():
+        digit_length = len(value_stripped)
+        if digit_length == 10:
+            # Telegram ID (exactly 10 digits)
+            normalized = normalize_telegram_id(value_stripped)
+            if normalized:
+                return 'telegram_id', normalized
+        elif digit_length >= 14:
+            # Facebook ID (14+ digits) - validate through validate_facebook_link
+            is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
+            if is_valid_fb:
+                return 'facebook_link', fb_normalized
+        elif digit_length >= 11 and digit_length <= 13:
+            # Ambiguous case (11-13 digits) - prefer Facebook ID (may be without leading zeros)
+            # But also check if it could be a valid Facebook ID
+            is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
+            if is_valid_fb:
+                return 'facebook_link', fb_normalized
+            # Fallback to telegram_id if Facebook validation fails
+            normalized = normalize_telegram_id(value_stripped)
+            if normalized:
+                return 'telegram_id', normalized
+        elif digit_length >= 5 and digit_length <= 9:
+            # Short numeric ID (5-9 digits) - likely Telegram ID (though rare)
+            normalized = normalize_telegram_id(value_stripped)
+            if normalized:
+                return 'telegram_id', normalized
+    
+    # 2. Check for Facebook link (URLs, usernames, etc.)
     is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
     if is_valid_fb:
         return 'facebook_link', fb_normalized
-    
-    # 2. Check for Telegram ID (only digits, minimum 5 digits for reliability)
-    if value_stripped.isdigit() and len(value_stripped) >= 5:
-        normalized = normalize_telegram_id(value_stripped)
-        if normalized:
-            return 'telegram_id', normalized
     
     # 3. Check if value contains Cyrillic characters - if yes, prioritize as fullname
     # Cyrillic characters are in range \u0400-\u04FF
@@ -2982,7 +3035,7 @@ async def add_from_check_photo_callback(update: Update, context: ContextTypes.DE
 async def check_by_multiple_fields(update: Update, context: ContextTypes.DEFAULT_TYPE, search_value: str):
     """
     Search across multiple fields simultaneously using OR conditions.
-    Searches in: telegram_user, telegram_id, fullname
+    Searches in: telegram_user, telegram_id, fullname, facebook_link
     """
     if not update.message:
         logger.error(f"[MULTI_FIELD_SEARCH] update.message is None")
@@ -3006,15 +3059,29 @@ async def check_by_multiple_fields(update: Update, context: ContextTypes.DEFAULT
         normalized_tg_user = None
         normalized_tg_id = None
         normalized_fullname = None
+        normalized_facebook_link = None
+        
+        # Try Facebook link normalization FIRST (before Telegram ID, as Facebook IDs are 14+ digits)
+        is_valid_fb, _, fb_normalized = validate_facebook_link(search_value)
+        if is_valid_fb:
+            normalized_facebook_link = fb_normalized
         
         # Try Telegram username normalization
         is_valid_tg_user, _, tg_user_normalized = validate_telegram_name(search_value)
         if is_valid_tg_user:
             normalized_tg_user = tg_user_normalized
         
-        # Try Telegram ID normalization
-        if search_value.isdigit() and len(search_value) >= 5:
-            normalized_tg_id = normalize_telegram_id(search_value)
+        # Try Telegram ID normalization (only if not already identified as Facebook ID)
+        # Telegram ID = 10 digits, Facebook ID = 14+ digits
+        if search_value.isdigit():
+            digit_length = len(search_value)
+            if digit_length == 10:
+                # Definitely Telegram ID (10 digits)
+                normalized_tg_id = normalize_telegram_id(search_value)
+            elif digit_length >= 5 and digit_length < 10:
+                # Short numeric ID (5-9 digits) - likely Telegram ID
+                normalized_tg_id = normalize_telegram_id(search_value)
+            # For 11-13 and 14+ digits, we already handled via Facebook validation above
         
         # Normalize for fullname search (contains pattern)
         if len(search_value.strip()) >= 3:
@@ -3078,6 +3145,19 @@ async def check_by_multiple_fields(update: Update, context: ContextTypes.DEFAULT
                             seen_ids.add(item.get('id'))
             except Exception as e:
                 logger.warning(f"[MULTI_FIELD_SEARCH] Error searching manager_name: {e}")
+        
+        # Search in facebook_link (exact match)
+        if normalized_facebook_link:
+            try:
+                response = client.table(TABLE_NAME).select("*").eq("facebook_link", normalized_facebook_link).limit(50).execute()
+                if response.data:
+                    for item in response.data:
+                        if item.get('id') not in seen_ids:
+                            all_results.append(item)
+                            seen_ids.add(item.get('id'))
+                    logger.info(f"[MULTI_FIELD_SEARCH] Found {len(response.data)} results in facebook_link for '{normalized_facebook_link}'")
+            except Exception as e:
+                logger.warning(f"[MULTI_FIELD_SEARCH] Error searching facebook_link: {e}")
         
         # Limit total results to 50
         all_results = all_results[:50]
