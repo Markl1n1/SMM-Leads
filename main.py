@@ -1806,11 +1806,24 @@ async def tag_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle PIN code input for tag command"""
     user_id = update.effective_user.id
     
-    # Safety check: if there are no tag flow markers, treat this as a stale PIN flow
-    # and do not intercept the message (so that add/edit flows can handle it)
-    if not context.user_data.get('tag_manager_name') and not context.user_data.get('tag_new_tag'):
+    # Safety check: if there are no tag flow markers AND we're not in TAG_PIN state with pin_attempts,
+    # treat this as a stale PIN flow and do not intercept the message (so that add/edit flows can handle it)
+    # Note: tag_manager_name and tag_new_tag appear only AFTER successful PIN input when user selects manager,
+    # so we need to check for valid TAG_PIN state as well
+    is_valid_tag_pin_state = (
+        context.user_data.get('current_state') == TAG_PIN and 
+        'pin_attempts' in context.user_data
+    )
+    has_tag_flow_markers = (
+        context.user_data.get('tag_manager_name') or 
+        context.user_data.get('tag_new_tag')
+    )
+    
+    if not is_valid_tag_pin_state and not has_tag_flow_markers:
         logger.info(
             f"[TAG_PIN_INPUT] Called without active tag flow markers for user {user_id}, "
+            f"current_state={context.user_data.get('current_state')}, "
+            f"pin_attempts={'pin_attempts' in context.user_data}, "
             "treating as stale PIN flow and ending conversation"
         )
         if 'pin_attempts' in context.user_data:
