@@ -3654,7 +3654,7 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
     return ConversationHandler.END
 
 async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE, search_value_override: str | None = None):
-    """Check by fullname using contains search with limit of 10 results
+    """Check by fullname using contains search with limit of 30 results
     
     Args:
         update: Telegram update object
@@ -3762,7 +3762,7 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         pattern = f"%{normalized_fullname}%"
         logger.info(f"[FULLNAME SEARCH] Using pattern: '{pattern}' for field 'fullname'")
         try:
-            response = client.table(TABLE_NAME).select("*").ilike("fullname", pattern).order("created_at", desc=True).limit(10).execute()
+            response = client.table(TABLE_NAME).select("*").ilike("fullname", pattern).order("created_at", desc=True).limit(30).execute()
             if response.data:
                 for item in response.data:
                     if item.get('id') not in seen_ids:
@@ -3816,7 +3816,7 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             try:
                 pattern = f"%{normalized_fullname}%"
                 logger.info(f"[FULLNAME SEARCH] Using pattern: '{pattern}' for field 'manager_name'")
-                response = client.table(TABLE_NAME).select("*").ilike("manager_name", pattern).order("created_at", desc=True).limit(10).execute()
+                response = client.table(TABLE_NAME).select("*").ilike("manager_name", pattern).order("created_at", desc=True).limit(30).execute()
                 if response.data:
                     for item in response.data:
                         if item.get('id') not in seen_ids:
@@ -3829,8 +3829,8 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         # Sort all results by created_at descending (newest first)
         all_results.sort(key=lambda x: x.get('created_at', ''), reverse=True)
         
-        # Limit total results to 10
-        all_results = all_results[:10]
+        # Limit total results to 30
+        all_results = all_results[:30]
         
         logger.info(f"[FULLNAME SEARCH] Total unique results after combining all fields: {len(all_results)}")
         if all_results:
