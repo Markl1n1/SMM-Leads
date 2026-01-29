@@ -5577,6 +5577,11 @@ UNIQUENESS_FIELD_LABELS = {
     'telegram_id': 'Telegram ID'
 }
 
+# Map internal field names to database column names for database queries
+FIELD_NAME_MAPPING = {
+    'telegram_name': 'telegram_user',  # Map telegram_name to telegram_user for database
+}
+
 def check_fields_uniqueness_batch(client, fields_to_check: dict) -> tuple[bool, str]:
     """
     Check uniqueness of multiple fields in a single query using OR conditions.
@@ -5584,11 +5589,6 @@ def check_fields_uniqueness_batch(client, fields_to_check: dict) -> tuple[bool, 
     """
     if not fields_to_check:
         return True, ""
-    
-    # Map internal field names to database column names
-    FIELD_NAME_MAPPING = {
-        'telegram_name': 'telegram_user',  # Map telegram_name to telegram_user for database
-    }
     
     # Check cache first
     cache_key = tuple(sorted(fields_to_check.items()))
@@ -5598,8 +5598,6 @@ def check_fields_uniqueness_batch(client, fields_to_check: dict) -> tuple[bool, 
             return cached_result
     
     # Check each field but use caching and limit queries
-    # Supabase Python client doesn't support OR conditions directly,
-    # so we check each field but optimize with caching
     try:
         for field_name, field_value in fields_to_check.items():
             if field_value and field_value.strip():
@@ -5621,6 +5619,53 @@ def check_fields_uniqueness_batch(client, fields_to_check: dict) -> tuple[bool, 
     except Exception as e:
         logger.error(f"Error checking batch uniqueness: {e}", exc_info=True)
         # On error, assume not unique to prevent duplicate inserts
+        return False, "unknown"
+
+def ensure_lead_identifiers_unique(
+    client,
+    fields_to_check: dict,
+    current_lead_id: int | None = None,
+) -> tuple[bool, str]:
+    """
+    Ensure that identifier fields (telegram/facebook) are unique.
+
+    For create flow (current_lead_id is None) this is equivalent to a simple batch uniqueness check.
+    For edit flow, records with id == current_lead_id are ignored so that a lead
+    is not considered a duplicate of itself.
+    """
+    if not fields_to_check:
+        return True, ""
+
+    # For create flow reuse existing batch logic
+    if current_lead_id is None:
+        return check_fields_uniqueness_batch(client, fields_to_check)
+
+    # Edit flow: check each field, excluding current_lead_id
+    try:
+        for field_name, field_value in fields_to_check.items():
+            if not field_value or not str(field_value).strip():
+                continue
+
+            db_field_name = FIELD_NAME_MAPPING.get(field_name, field_name)
+
+            # Query potential duplicates and exclude current lead by id
+            response = (
+                client
+                .table(TABLE_NAME)
+                .select("id")
+                .eq(db_field_name, field_value)
+                .neq("id", current_lead_id)
+                .limit(1)
+                .execute()
+            )
+            if response.data and len(response.data) > 0:
+                # Found another lead with same value
+                return False, field_name
+
+        return True, ""
+    except Exception as e:
+        logger.error(f"Error ensuring identifiers uniqueness (edit flow): {e}", exc_info=True)
+        # On error, be conservative and treat as non-unique
         return False, "unknown"
 
 def get_unique_manager_names(client) -> list[str]:
@@ -6245,8 +6290,8 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 await query.edit_message_text(
-                    f"❌ <b>Ошибка:</b> {field_label} уже существует в базе данных.\n\n"
-                    "💡 <b>Попробуйте:</b>\n"
+                    f"❌ <b>Ошибка:</b> {field_label} уже существует в базе данных, лид не был сохранён.\n\n"
+                    "💡 <b>Что можно сделать:</b>\n"
                     "• Проверить существующий лид через меню \"Проверить\"\n"
                     "• Добавить лид заново с другими данными\n"
                     "• Убедиться, что данные введены корректно",
@@ -6257,17 +6302,15 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # If edit fails (message was deleted), send new message
                 if "not found" in str(e) or "BadRequest" in str(type(e).__name__):
                     await query.message.reply_text(
-                        f"❌ <b>Ошибка:</b> {field_label} уже существует в базе.\n\n"
+                        f"❌ <b>Ошибка:</b> {field_label} уже существует в базе, лид не был сохранён.\n\n"
                         "ℹ️ Попробуйте добавить лид заново с другими данными.",
                         reply_markup=get_main_menu_keyboard(),
                         parse_mode='HTML'
                     )
                 else:
                     raise
-            if user_id in user_data_store:
-                del user_data_store[user_id]
-            if user_id in user_data_store_access_time:
-                del user_data_store_access_time[user_id]
+            # Полностью очищаем все состояния и временные данные пользователя
+            clear_all_conversation_state(context, user_id)
             return ConversationHandler.END
     
     # All fields are unique, proceed with saving
@@ -7053,18 +7096,18 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Merge logic: Start with current DB data, apply only changes from user_data_store
     # This ensures unchanged fields are not lost
     update_data = current_db_data.copy()
-    
+
     # Remove fields that shouldn't be updated
     for field in ['id', 'created_at']:
         update_data.pop(field, None)
-    
+
     # Apply only fields that were changed by the user
     # Compare with original data to determine what was actually changed
     original_data = context.user_data.get('original_lead_data', {})
-    
+
     # Fields that can be edited
     editable_fields = ['fullname', 'manager_name', 'facebook_link', 'telegram_name', 'telegram_id']
-    
+
     for field in editable_fields:
         if field in user_data:
             # Get current value from user_data (what user entered/changed)
@@ -7074,7 +7117,7 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             # Handle telegram_user/telegram_name mapping for original
             if field == 'telegram_name':
                 original_value = original_data.get('telegram_name') or original_data.get('telegram_user')
-            
+
             # Normalize values for comparison (handle None, empty strings, whitespace)
             def normalize_for_compare(val):
                 if val is None:
@@ -7082,14 +7125,14 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if isinstance(val, str):
                     return val.strip()
                 return str(val).strip()
-            
+
             current_normalized = normalize_for_compare(current_value)
             original_normalized = normalize_for_compare(original_value)
-            
+
             # If value changed, update it
             if current_normalized != original_normalized:
                 update_data[field] = current_value
-    
+
     # Map telegram_name to telegram_user for database (backward compatibility)
     if 'telegram_name' in update_data:
         telegram_name_value = update_data.pop('telegram_name')
@@ -7099,6 +7142,30 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         # If telegram_name is empty, also clear telegram_user
         elif 'telegram_user' in update_data:
             update_data['telegram_user'] = None
+
+    # Build fields_to_check for uniqueness (only non-empty identifiers)
+    fields_to_check = {}
+    for field_name in ['facebook_link', 'telegram_name', 'telegram_id']:
+        field_value = update_data.get(field_name)
+        if field_value and str(field_value).strip():
+            fields_to_check[field_name] = field_value
+
+    # Run uniqueness check for edit flow (ignore current lead id)
+    if fields_to_check:
+        is_unique, conflicting_field = ensure_lead_identifiers_unique(client, fields_to_check, current_lead_id=lead_id)
+        if not is_unique:
+            field_label = UNIQUENESS_FIELD_LABELS.get(conflicting_field, conflicting_field)
+
+            await query.edit_message_text(
+                f"❌ <b>Ошибка:</b> {field_label} уже существует в базе данных у другого лида, изменения не были сохранены.\n\n"
+                "💡 <b>Что можно сделать:</b>\n"
+                "• Изменить значение поля и попробовать снова\n"
+                "• Вернуться к выбору поля для редактирования",
+                reply_markup=get_edit_field_keyboard(user_id, context.user_data.get('original_lead_data', {})),
+                parse_mode='HTML'
+            )
+            # Остаёмся в edit‑флоу, возвращаемся к меню выбора поля
+            return EDIT_MENU
     
     try:
 
