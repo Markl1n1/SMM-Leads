@@ -1145,7 +1145,7 @@ async def check_add_state_entry_callback(update: Update, context: ContextTypes.D
         logger.info(
             f"[CHECK_ADD_STATE_ENTRY_CALLBACK] user_id={user_id}, current_state={current_state}, "
             f"has_conversation_keys={has_conversation_keys}, user_data_store_exists={user_id in user_data_store}, "
-            f"callback={callback_data}"
+            f"callback={callback_data}, conversation_keys={[k for k in (context.user_data.keys() if context.user_data else []) if k.startswith('_conversation_')]}"
         )
         
         # Process the callback immediately based on its type
@@ -1166,6 +1166,15 @@ async def check_add_state_entry_callback(update: Update, context: ContextTypes.D
             logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_save callback for user {user_id} in state {current_state}")
             result = await add_save_callback(update, context)
             logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] add_save_callback returned: {result}")
+            return result if result is not None else ConversationHandler.END
+        elif callback_data == "add_save_force":
+            # Force save without photo (when photo was lost)
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_save_force callback for user {user_id} in state {current_state}")
+            # Clear had_photo flag to allow saving without photo
+            if user_id in user_data_store:
+                user_data_store[user_id].pop('had_photo', None)
+            result = await add_save_callback(update, context)
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] add_save_callback (force) returned: {result}")
             return result if result is not None else ConversationHandler.END
         elif callback_data == "edit_fullname_from_review":
             # Delegate to edit_fullname_from_review_callback
@@ -1242,8 +1251,9 @@ def extract_data_from_forwarded_message(update: Update) -> tuple[dict, list]:
         largest_photo = update.message.photo[-1]
         photo_file_id = largest_photo.file_id
         extracted_data['photo_file_id'] = photo_file_id
+        extracted_data['had_photo'] = True  # Mark that photo was extracted
         extracted_info.append("• Фото: обнаружено (будет загружено при сохранении)")
-        logger.info(f"[EXTRACT_DATA] Extracted photo_file_id: {photo_file_id}")
+        logger.info(f"[EXTRACT_DATA] Extracted photo_file_id: {photo_file_id}, marked had_photo=True")
     
     return extracted_data, extracted_info
 
@@ -1335,6 +1345,7 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
                     largest_photo = update.message.photo[-1]
                     photo_file_id = largest_photo.file_id
                     extracted_data['photo_file_id'] = photo_file_id
+                    extracted_data['had_photo'] = True  # Mark that photo was extracted
                 
                 if update.message.caption:
                     caption = update.message.caption.strip()
@@ -1348,6 +1359,9 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
             # Save extracted data to user_data_store
             for key, value in extracted_data.items():
                 user_data_store[user_id][key] = value
+            # Mark had_photo if photo was extracted
+            if 'photo_file_id' in extracted_data:
+                user_data_store[user_id]['had_photo'] = True
             
             context.user_data['forwarded_extracted_data'] = extracted_data
             context.user_data['is_forwarded_message'] = True
@@ -1360,9 +1374,10 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
                 key.startswith('_conversation_') 
                 for key in (context.user_data.keys() if context.user_data else [])
             )
+            conversation_keys_list = [k for k in (context.user_data.keys() if context.user_data else []) if k.startswith('_conversation_')]
             logger.info(
                 f"[FORWARD_GLOBAL] Set ADD_REVIEW state for user {user_id}, "
-                f"has_conversation_keys={has_conversation_keys}, "
+                f"has_conversation_keys={has_conversation_keys}, conversation_keys={conversation_keys_list}, "
                 f"user_data_store_keys={list(user_data_store.get(user_id, {}).keys())}, "
                 f"ConversationHandler should activate via entry points"
             )
@@ -1726,7 +1741,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cleanup_all_messages_before_main_menu(update, context)
         
         welcome_message = (
-            "👋 Добро пожаловать в ClientsBot!\n\n"
+            "👋 <b>Добро пожаловать в ClientsBot!</b>\n\n"
+            "Вы вернулись в главное меню. Текущие сценарии сброшены.\n\n"
             "Выберите действие:"
         )
         await retry_telegram_api(
@@ -2259,8 +2275,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Show main menu FIRST (fast response)
             await retry_telegram_api(
                 query.edit_message_text,
-                text="👋 Главное меню\n\nВыберите действие:",
-                reply_markup=get_main_menu_keyboard()
+                text="👋 <b>Главное меню</b>\n\n"
+                "Вы вернулись в главное меню. Текущие сценарии сброшены.\n\n"
+                "Выберите действие:",
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode='HTML'
             )
             
             # Clean up messages AFTER showing menu (in background, don't wait)
@@ -2388,8 +2407,8 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
             # Return None to let ConversationHandler process it
             return None
         
-        # Special handling for add_skip, add_back, add_cancel, add_save - try to activate ConversationHandler
-        if callback_data in ["add_skip", "add_back", "add_cancel", "add_save"]:
+        # Special handling for add_skip, add_back, add_cancel, add_save, add_save_force - try to activate ConversationHandler
+        if callback_data in ["add_skip", "add_back", "add_cancel", "add_save", "add_save_force"]:
             logger.info(f"[UNKNOWN_CALLBACK] {callback_data} callback not handled by ConversationHandler, checking for add state for user {user_id}")
             # Check if user has add state initialized
             add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
@@ -2477,9 +2496,20 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 logger.warning(f"[UNKNOWN_CALLBACK] Stale ConversationHandler state detected for callback '{callback_data}'. Clearing state for user {user_id}")
                 if user_id:
                     clear_all_conversation_state(context, user_id)
-                # Don't show error for stale callbacks - just answer silently
+                # Show message explaining that previous scenario was completed
                 try:
-                    await retry_telegram_api(query.answer)
+                    await retry_telegram_api(query.answer, text="⚠️ Предыдущий сценарий был завершён.", show_alert=True)
+                    if query.message:
+                        message_text = query.message.text or ""
+                        has_main_menu_buttons = "Проверить" in message_text or "Добавить" in message_text
+                        if not has_main_menu_buttons:
+                            await retry_telegram_api(
+                                query.edit_message_text,
+                                text="⚠️ <b>Предыдущий сценарий был завершён, начнём сначала.</b>\n\n"
+                                "Используйте кнопки меню для навигации.",
+                                reply_markup=get_main_menu_keyboard(),
+                                parse_mode='HTML'
+                            )
                 except:
                     pass
                 return ConversationHandler.END
@@ -2489,7 +2519,7 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
         logger.warning(f"[UNKNOWN_CALLBACK] Unknown callback query: '{callback_data}' from user {user_id}")
         
         try:
-            await retry_telegram_api(query.answer, text="⚠️ Неизвестная команда. Используйте меню.", show_alert=True)
+            await retry_telegram_api(query.answer, text="⚠️ Эта кнопка больше неактуальна.", show_alert=True)
             if query.message:
                 # Check if message already shows main menu to avoid "Message is not modified" error
                 message_text = query.message.text or ""
@@ -2499,9 +2529,10 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
                 if not has_main_menu_buttons:
                     await retry_telegram_api(
                         query.edit_message_text,
-                        text="❌ Неизвестная команда.\n\n"
-                        "Используйте кнопки меню для навигации.",
-                        reply_markup=get_main_menu_keyboard()
+                        text="⚠️ <b>Эта кнопка больше неактуальна.</b>\n\n"
+                        "Пожалуйста, начните сценарий заново из главного меню.",
+                        reply_markup=get_main_menu_keyboard(),
+                        parse_mode='HTML'
                     )
                 else:
                     # Message already shows main menu, just answer callback
@@ -5065,9 +5096,11 @@ async def handle_photo_during_add(update: Update, context: ContextTypes.DEFAULT_
     
     # Save photo to user_data_store
     user_data_store[user_id]['photo_file_id'] = photo_file_id
+    # Mark that user had a photo, so we can detect if it's lost later
+    user_data_store[user_id]['had_photo'] = True
     user_data_store_access_time[user_id] = time.time()
     
-    logger.info(f"[PHOTO_DURING_ADD] Saved photo_file_id={photo_file_id} for user {user_id} in user_data_store")
+    logger.info(f"[PHOTO_DURING_ADD] Saved photo_file_id={photo_file_id} for user {user_id} in user_data_store, marked had_photo=True")
     logger.info(f"[PHOTO_DURING_ADD] After saving photo - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}")
     logger.info(f"[PHOTO_DURING_ADD] photo_file_id verification: {user_data_store[user_id].get('photo_file_id')}")
     
@@ -5182,12 +5215,14 @@ async def handle_document_during_add(update: Update, context: ContextTypes.DEFAU
     
     # Save document file_id to user_data_store (use same key as photo)
     user_data_store[user_id]['photo_file_id'] = document_file_id
+    # Mark that user had a photo, so we can detect if it's lost later
+    user_data_store[user_id]['had_photo'] = True
     user_data_store_access_time[user_id] = time.time()
     
     # Log after saving to verify
     logger.info(f"[DOCUMENT_DURING_ADD] After saving - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}, photo_file_id={document_file_id}")
     
-    logger.info(f"[DOCUMENT_DURING_ADD] Saved photo_file_id={document_file_id} for user {user_id} in user_data_store")
+    logger.info(f"[DOCUMENT_DURING_ADD] Saved photo_file_id={document_file_id} for user {user_id} in user_data_store, marked had_photo=True")
     
     # Notify user that photo was saved
     await update.message.reply_text(
@@ -5246,9 +5281,10 @@ async def forwarded_add_callback(update: Update, context: ContextTypes.DEFAULT_T
         key.startswith('_conversation_') 
         for key in (context.user_data.keys() if context.user_data else [])
     )
+    conversation_keys_list = [k for k in (context.user_data.keys() if context.user_data else []) if k.startswith('_conversation_')]
     logger.info(
         f"[FORWARDED_ADD] Set ADD_REVIEW state for user {user_id}, "
-        f"has_conversation_keys={has_conversation_keys}, "
+        f"has_conversation_keys={has_conversation_keys}, conversation_keys={conversation_keys_list}, "
         f"user_data_store_keys={list(user_data_store.get(user_id, {}).keys())}, "
         f"ConversationHandler should activate via entry points"
     )
@@ -6328,6 +6364,27 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # All fields are unique, proceed with saving
     try:
+        # Check if user had a photo but it was lost
+        had_photo = user_data.get('had_photo') or (user_id in user_data_store and user_data_store[user_id].get('had_photo'))
+        photo_file_id_exists = 'photo_file_id' in user_data or (user_id in user_data_store and 'photo_file_id' in user_data_store[user_id])
+        
+        if had_photo and not photo_file_id_exists:
+            # User expected photo to be saved, but it was lost
+            logger.warning(f"[ADD_SAVE] Photo was expected (had_photo=True) but photo_file_id is missing for user {user_id}")
+            await query.edit_message_text(
+                "⚠️ <b>Предупреждение:</b> Прикреплённое изображение не удалось сохранить.\n\n"
+                "💡 <b>Что можно сделать:</b>\n"
+                "• Сохранить лид без фото (нажмите «Сохранить» ещё раз)\n"
+                "• Отменить и добавить лид заново с фото\n"
+                "• Попробовать прикрепить фото снова",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💾 Сохранить без фото", callback_data="add_save_force")],
+                    [InlineKeyboardButton("❌ Отменить", callback_data="add_cancel")]
+                ]),
+                parse_mode='HTML'
+            )
+            return ADD_REVIEW
+        
         # Prepare data for saving - map telegram_name to telegram_user for database compatibility
         save_data = user_data.copy()
         
@@ -6754,7 +6811,11 @@ async def edit_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return ConversationHandler.END
         
-        message = f"✏️ Редактирование лида (ID: {lead_id})\n\nВыберите поле для редактирования:"
+        message = (
+            f"✏️ <b>Редактирование лида</b> (ID: {lead_id})\n\n"
+            "Выберите поле для редактирования.\n\n"
+            "💡 <b>Подсказка:</b> Кнопка «◀️ Назад» вернёт вас к списку полей редактирования."
+        )
         await update.message.reply_text(
             message,
             reply_markup=get_edit_field_keyboard(user_id, context.user_data.get('original_lead_data', {}))
@@ -6856,7 +6917,11 @@ async def edit_field_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"Введите новое значение или отправьте /skip чтобы оставить текущее:"
         )
     else:
-        await query.edit_message_text(f"📝 Введите {field_label}:")
+        await query.edit_message_text(
+            f"📝 Введите {field_label}:\n\n"
+            "💡 <b>Подсказка:</b> Кнопка «◀️ Назад» вернёт к списку полей редактирования.",
+            parse_mode='HTML'
+        )
     
     context.user_data['current_field'] = field_name
     context.user_data['current_state'] = next_state
@@ -7667,7 +7732,7 @@ def create_telegram_app():
             MessageHandler(filters.TEXT & ~filters.COMMAND, check_add_state_entry),
             # Allow CallbackQueryHandler to enter if user has add state initialized (from forwarded message)
             # This handles callbacks like add_skip, add_back, add_save when flow was started via forwarded message
-            CallbackQueryHandler(check_add_state_entry_callback, pattern="^(add_skip|add_back|add_cancel|add_save)$")
+            CallbackQueryHandler(check_add_state_entry_callback, pattern="^(add_skip|add_back|add_cancel|add_save|add_save_force)$")
         ],
         states={
             ADD_FULLNAME: [
@@ -7711,6 +7776,7 @@ def create_telegram_app():
             ],
             ADD_REVIEW: [
                 CallbackQueryHandler(add_save_callback, pattern="^add_save$"),
+                CallbackQueryHandler(add_save_callback, pattern="^add_save_force$"),
                 # pre-save edit menu and field editing callbacks (без PIN)
                 CallbackQueryHandler(edit_fullname_from_review_callback, pattern="^edit_fullname_from_review$"),
                 CallbackQueryHandler(add_edit_field_fullname_from_review_callback, pattern="^add_edit_field_fullname$"),
