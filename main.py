@@ -66,8 +66,8 @@ PORT = int(os.environ.get('PORT', 8000))  # Default port, usually set by Koyeb
 SUPABASE_LEADS_BUCKET = os.environ.get('SUPABASE_LEADS_BUCKET', 'Leads')  # Supabase Storage bucket name
 ENABLE_LEAD_PHOTOS = os.environ.get('ENABLE_LEAD_PHOTOS', 'true').lower() == 'true'  # Enable/disable photo uploads
 
-# PIN code configuration
-PIN_CODE = os.environ.get('PIN_CODE', '2025')  # Default PIN code, can be overridden via environment variable
+# PIN code configuration - REQUIRED environment variable (no default for security)
+PIN_CODE = os.environ.get('PIN_CODE')
 
 # Supabase client - thread-safe, can be used concurrently by multiple users
 supabase: Client = None
@@ -815,8 +815,8 @@ async def download_photo_from_supabase(photo_url: str) -> bytes | None:
     """Download photo from Supabase Storage using storage client and return as bytes"""
     try:
         # Extract storage path from URL
-        # URL format: https://{project}.supabase.co/storage/v1/object/public/{bucket}/{path}
-        # Example: https://mwovubdpxkeqpyxsadgg.supabase.co/storage/v1/object/public/Leads/photos/lead_2051_f475f8b3.jpg
+        # URL format: https://{project-id}.supabase.co/storage/v1/object/public/{bucket}/{path}
+        # Example: https://your-project-id.supabase.co/storage/v1/object/public/Leads/photos/lead_2051_f475f8b3.jpg
         if not photo_url or not photo_url.strip():
             logger.error("[PHOTO] Empty photo_url provided")
             return None
@@ -8077,6 +8077,9 @@ if __name__ == '__main__':
     
     if not SUPABASE_KEY:
         missing_vars.append("SUPABASE_KEY")
+    
+    if not PIN_CODE:
+        missing_vars.append("PIN_CODE")
     
     if missing_vars:
         logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
