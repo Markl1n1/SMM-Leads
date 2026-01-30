@@ -2732,12 +2732,36 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     keys_to_remove = [key for key in context.user_data.keys() if key.startswith('_conversation_')]
                     for key in keys_to_remove:
                         del context.user_data[key]
-            # Answer callback and let ConversationHandler process it
+            # Answer callback first
             try:
                 await retry_telegram_api(query.answer)
             except:
                 pass
-            # Return None to let ConversationHandler process it
+            # Try to call check_menu_callback directly as fallback
+            try:
+                result = await check_menu_callback(update, context)
+                if result:
+                    return result
+            except Exception as e:
+                logger.error(f"Error in check_menu fallback handler: {e}", exc_info=True)
+                try:
+                    if query.message:
+                        await retry_telegram_api(
+                            query.edit_message_text,
+                            text="❌ Произошла ошибка при запуске проверки.\n\n"
+                                 "Попробуйте снова или обратитесь к администратору.",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                    else:
+                        await retry_telegram_api(
+                            query.message.reply_text,
+                            text="❌ Произошла ошибка при запуске проверки.\n\n"
+                                 "Попробуйте снова или обратитесь к администратору.",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                except:
+                    pass
+            # Return None to let ConversationHandler process it if it's now active
             return None
         
         # Special handling for add flow callbacks - try to activate ConversationHandler
@@ -8492,6 +8516,8 @@ def create_telegram_app():
             SMART_CHECK_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, smart_check_input),
                 MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_check),
+                # Allow restarting check flow even if already in SMART_CHECK_INPUT state
+                CallbackQueryHandler(check_menu_callback, pattern="^check_menu$"),
                 CommandHandler("q", quit_command),
                 CommandHandler("start", start_command),
             ]
