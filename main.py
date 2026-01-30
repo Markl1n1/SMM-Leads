@@ -66,6 +66,12 @@ PORT = int(os.environ.get('PORT', 8000))  # Default port, usually set by Koyeb
 SUPABASE_LEADS_BUCKET = os.environ.get('SUPABASE_LEADS_BUCKET', 'Leads')  # Supabase Storage bucket name
 ENABLE_LEAD_PHOTOS = os.environ.get('ENABLE_LEAD_PHOTOS', 'true').lower() == 'true'  # Enable/disable photo uploads
 
+# Facebook flow configuration
+FACEBOOK_FLOW_ENABLED = os.environ.get('FACEBOOK_FLOW', 'OFF').upper() == 'ON'  # Enable/disable Facebook link step in add flow
+
+# Minimal add mode configuration
+MINIMAL_ADD_MODE_ENABLED = os.environ.get('MINIMAL_ADD_MODE', 'OFF').upper() == 'ON'  # Enable/disable minimal add mode (name + photo only)
+
 # PIN code configuration - REQUIRED environment variable (no default for security)
 PIN_CODE = os.environ.get('PIN_CODE')
 
@@ -83,6 +89,122 @@ CACHE_TTL = 300  # 5 minutes in seconds
 
 # Graceful shutdown flag
 shutdown_requested = False
+
+# Rate limiting configuration
+RATE_LIMIT_ENABLED = os.environ.get('RATE_LIMIT_ENABLED', 'true').lower() == 'true'
+RATE_LIMIT_REQUESTS = int(os.environ.get('RATE_LIMIT_REQUESTS', 30))  # Requests per window
+RATE_LIMIT_WINDOW = int(os.environ.get('RATE_LIMIT_WINDOW', 60))  # Window in seconds (default: 1 minute)
+
+# Rate limiting storage: {user_id: [timestamp1, timestamp2, ...]}
+rate_limit_store = {}
+
+def is_facebook_flow_enabled() -> bool:
+    """Check if Facebook flow is enabled via FACEBOOK_FLOW environment variable"""
+    return FACEBOOK_FLOW_ENABLED
+
+def is_minimal_add_mode_enabled() -> bool:
+    """Check if minimal add mode is enabled via MINIMAL_ADD_MODE environment variable"""
+    return MINIMAL_ADD_MODE_ENABLED
+
+def check_rate_limit(user_id: int) -> tuple[bool, int]:
+    """Check if user has exceeded rate limit
+    
+    Args:
+        user_id: Telegram user ID
+        
+    Returns:
+        tuple: (is_allowed, remaining_or_wait)
+            - is_allowed: True if request is allowed, False if rate limited
+            - remaining_or_wait: If allowed, number of remaining requests. If not allowed, wait time in seconds
+    """
+    if not RATE_LIMIT_ENABLED:
+        return True, RATE_LIMIT_REQUESTS
+    
+    current_time = time.time()
+    window_start = current_time - RATE_LIMIT_WINDOW
+    
+    # Initialize or get user's request timestamps
+    if user_id not in rate_limit_store:
+        rate_limit_store[user_id] = []
+    
+    # Remove old timestamps outside the window
+    rate_limit_store[user_id] = [
+        ts for ts in rate_limit_store[user_id] 
+        if ts > window_start
+    ]
+    
+    # Check if limit exceeded
+    if len(rate_limit_store[user_id]) >= RATE_LIMIT_REQUESTS:
+        # Calculate when the oldest request will expire
+        oldest_request = min(rate_limit_store[user_id])
+        wait_seconds = int(RATE_LIMIT_WINDOW - (current_time - oldest_request)) + 1
+        return False, wait_seconds
+    
+    # Add current request timestamp
+    rate_limit_store[user_id].append(current_time)
+    remaining = RATE_LIMIT_REQUESTS - len(rate_limit_store[user_id])
+    
+    return True, remaining
+
+def cleanup_rate_limit_store():
+    """Clean up old entries from rate_limit_store to prevent memory leaks"""
+    if not RATE_LIMIT_ENABLED:
+        return
+    
+    current_time = time.time()
+    window_start = current_time - RATE_LIMIT_WINDOW
+    
+    users_to_clean = []
+    for user_id, timestamps in rate_limit_store.items():
+        # Remove old timestamps
+        rate_limit_store[user_id] = [ts for ts in timestamps if ts > window_start]
+        # Remove user if no active requests
+        if not rate_limit_store[user_id]:
+            users_to_clean.append(user_id)
+    
+    # Remove users with no active requests
+    for user_id in users_to_clean:
+        del rate_limit_store[user_id]
+
+def rate_limit_handler(func):
+    """Decorator to add rate limiting to handler functions"""
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update.effective_user:
+            # If no user, allow (shouldn't happen, but be safe)
+            return await func(update, context)
+        
+        user_id = update.effective_user.id
+        is_allowed, remaining_or_wait = check_rate_limit(user_id)
+        
+        if not is_allowed:
+            # Rate limit exceeded
+            wait_seconds = remaining_or_wait
+            logger.warning(f"[RATE_LIMIT] User {user_id} exceeded rate limit. Wait {wait_seconds}s")
+            
+            # Try to send rate limit message to user
+            try:
+                if update.message:
+                    await update.message.reply_text(
+                        f"⚠️ <b>Превышен лимит запросов</b>\n\n"
+                        f"Пожалуйста, подождите {wait_seconds} секунд перед следующим запросом.\n\n"
+                        f"Это защита от злоупотреблений.",
+                        parse_mode='HTML'
+                    )
+                elif update.callback_query:
+                    await update.callback_query.answer(
+                        text=f"⚠️ Превышен лимит. Подождите {wait_seconds} секунд.",
+                        show_alert=True
+                    )
+            except Exception as e:
+                logger.error(f"[RATE_LIMIT] Failed to send rate limit message: {e}")
+            
+            return  # Don't process the update
+        
+        # Request allowed, proceed
+        return await func(update, context)
+    
+    return wrapper
 
 def retry_supabase_query(max_retries=3, delay=1, backoff=2):
     """Decorator for retrying Supabase queries with exponential backoff"""
@@ -396,99 +518,113 @@ def validate_facebook_link(link: str) -> tuple[bool, str, str]:
         error_msg = "Неверный формат Facebook ссылки."
         return False, error_msg, ""
     
-    # Remove http:// or https:// if present
-    if link_clean.startswith('http://'):
-        link_clean = link_clean[7:]
-    elif link_clean.startswith('https://'):
-        link_clean = link_clean[8:]
-    
-    # Remove www. if present
-    if link_clean.startswith('www.'):
-        link_clean = link_clean[4:]
-    
-    # Remove facebook.com/ or m.facebook.com/ if present
-    if link_clean.lower().startswith('facebook.com/'):
-        link_clean = link_clean[13:]
-    elif link_clean.lower().startswith('m.facebook.com/'):
-        link_clean = link_clean[15:]
-    
-    # Handle profile.php?id= format or any link with id= parameter - extract ONLY the ID number
-    if 'id=' in link_clean:
-        # Extract ID from query string - look for id= parameter
-        # Handle cases like:
-        # - profile.php?id=123456
-        # - profile.php?id=123456&ref=...
-        # - profile.php?id=123456] (with trailing characters)
-        # - profile.php?id=123456/extra/path (with additional paths)
-        # - ?id=123456 (without profile.php)
-        # - /people/Name/123456 (alternative format)
+    # Parse URL to extract path and query more reliably using urlparse
+    try:
+        # Ensure URL has protocol for urlparse
+        url_to_parse = link_clean if link_clean.startswith('http') else f'https://{link_clean}'
+        parsed = urlparse(url_to_parse)
+        path = parsed.path.strip('/')
+        query = parsed.query
         
-        # Extract everything after id=
-        id_part_raw = link_clean.split('id=')[-1]
-        
-        # Remove query parameters (&), hash fragments (#), and any trailing characters
-        # Extract only the numeric ID part, ignoring any non-digit characters after it
-        id_part = ""
-        for char in id_part_raw:
-            if char.isdigit():
-                id_part += char
-            elif char in ['&', '#', '?', '/', '\\', ']', '[', ')', '(', '}', '{', ' ', '\t', '\n']:
-                # Stop at first non-digit separator character
-                break
-            else:
-                # If we encounter a non-digit, non-separator character, it might be part of the ID
-                # But typically Facebook IDs are only digits, so we stop here
-                break
-        
-        # Also check for alternative format: /people/Name/123456
-        if not id_part or not id_part.isdigit():
-            # Try to extract ID from path like /people/Name/123456
-            path_parts = link_clean.split('/')
-            for part in reversed(path_parts):
-                # Extract only digits from the part
-                digits_only = ''.join(filter(str.isdigit, part))
-                if digits_only and len(digits_only) > 5:  # Facebook IDs are usually long numbers
-                    id_part = digits_only
-                    break
-        
-        # Validate that ID contains only digits and has reasonable length
-        if id_part and id_part.isdigit() and len(id_part) >= 5:
-            return True, "", id_part
-        else:
-            return False, "Не удалось извлечь Facebook ID из ссылки. Убедитесь, что ссылка содержит корректный ID.", ""
-    
-    # For username format: extract just the username (last part after /)
-    # Remove query parameters if present
-    if '?' in link_clean:
-        link_clean = link_clean.split('?')[0]
-    
-    # Remove hash fragments if present
-    if '#' in link_clean:
-        link_clean = link_clean.split('#')[0]
-    
-    # Remove trailing slash and any trailing non-alphanumeric characters
-    link_clean = link_clean.rstrip('/')
-    
-    # Remove any trailing brackets, parentheses, or other special characters
-    # Keep only alphanumeric, dots, underscores, and hyphens for username
-    while link_clean and not link_clean[-1].isalnum() and link_clean[-1] not in ['.', '_', '-']:
-        link_clean = link_clean[:-1]
-    
-    # Extract username (last part after /)
-    parts = link_clean.split('/')
-    if len(parts) > 0:
-        # Get the last non-empty part (username)
-        extracted = parts[-1] if parts[-1] else (parts[-2] if len(parts) > 1 else "")
-        
-        # Clean extracted username from any trailing special characters
-        if extracted:
-            # Remove any trailing non-alphanumeric characters (except dots, underscores, hyphens)
-            cleaned_username = extracted
-            while cleaned_username and not cleaned_username[-1].isalnum() and cleaned_username[-1] not in ['.', '_', '-']:
-                cleaned_username = cleaned_username[:-1]
+        # Handle profile.php?id= format or any link with id= parameter - extract ONLY the ID number
+        if 'id=' in query or 'id=' in link_clean:
+            # Extract ID from query string
+            id_value = None
+            if 'id=' in query:
+                id_value = parse_qs(query).get('id', [None])[0]
+            elif 'id=' in link_clean:
+                # Fallback: extract from link_clean directly
+                id_part_raw = link_clean.split('id=')[-1]
+                id_part = ""
+                for char in id_part_raw:
+                    if char.isdigit():
+                        id_part += char
+                    elif char in ['&', '#', '?', '/', '\\', ']', '[', ')', '(', '}', '{', ' ', '\t', '\n']:
+                        break
+                    else:
+                        break
+                if id_part and id_part.isdigit() and len(id_part) >= 5:
+                    return True, "", id_part
             
-            if cleaned_username:
-                return True, "", cleaned_username
+            if id_value:
+                # Extract only digits from ID value
+                id_digits = ''.join(filter(str.isdigit, str(id_value)))
+                if id_digits and len(id_digits) >= 5:
+                    return True, "", id_digits
+        
+        # For username format: extract just the username (last part of path)
+        if path:
+            # Remove any leading/trailing slashes and split
+            path_parts = [p for p in path.split('/') if p]
+            if path_parts:
+                # Get the last part (username)
+                username = path_parts[-1]
+                
+                # Remove query parameters if somehow included in path
+                if '?' in username:
+                    username = username.split('?')[0]
+                if '#' in username:
+                    username = username.split('#')[0]
+                
+                # Clean username from any trailing special characters
+                # Keep only alphanumeric, dots, underscores, and hyphens
+                cleaned_username = username
+                while cleaned_username and not cleaned_username[-1].isalnum() and cleaned_username[-1] not in ['.', '_', '-']:
+                    cleaned_username = cleaned_username[:-1]
+                
+                if cleaned_username:
+                    return True, "", cleaned_username
+        
+        # Fallback: if path is empty but we have a valid Facebook URL, try old method
+        # This handles edge cases where urlparse might not work as expected
+        link_clean_old = link_clean
+        
+        # Remove http:// or https:// if present
+        if link_clean_old.startswith('http://'):
+            link_clean_old = link_clean_old[7:]
+        elif link_clean_old.startswith('https://'):
+            link_clean_old = link_clean_old[8:]
+        
+        # Remove www. if present
+        if link_clean_old.startswith('www.'):
+            link_clean_old = link_clean_old[4:]
+        
+        # Remove facebook.com/ or m.facebook.com/ if present
+        if link_clean_old.lower().startswith('facebook.com/'):
+            link_clean_old = link_clean_old[13:]
+        elif link_clean_old.lower().startswith('m.facebook.com/'):
+            link_clean_old = link_clean_old[15:]
+        
+        # Remove query parameters and hash fragments
+        if '?' in link_clean_old:
+            link_clean_old = link_clean_old.split('?')[0]
+        if '#' in link_clean_old:
+            link_clean_old = link_clean_old.split('#')[0]
+        
+        # Remove trailing slash
+        link_clean_old = link_clean_old.rstrip('/')
+        
+        # Remove any trailing special characters
+        while link_clean_old and not link_clean_old[-1].isalnum() and link_clean_old[-1] not in ['.', '_', '-']:
+            link_clean_old = link_clean_old[:-1]
+        
+        # Extract username (last part after /)
+        parts = link_clean_old.split('/')
+        if parts:
+            extracted = parts[-1] if parts[-1] else (parts[-2] if len(parts) > 1 else "")
+            
+            if extracted:
+                # Clean extracted username
+                cleaned_username = extracted
+                while cleaned_username and not cleaned_username[-1].isalnum() and cleaned_username[-1] not in ['.', '_', '-']:
+                    cleaned_username = cleaned_username[:-1]
+                
+                if cleaned_username:
+                    return True, "", cleaned_username
+        
+    except Exception as e:
+        logger.error(f"[VALIDATE_FB_LINK] Error parsing URL: {e}, link: {link_clean}")
+        # Fall through to error
     
     error_msg = "Неверный формат Facebook ссылки."
     return False, error_msg, ""
@@ -560,10 +696,21 @@ def detect_search_type(value: str) -> tuple[str, str]:
             if normalized:
                 return 'telegram_id', normalized
     
-    # 2. Check for Facebook link (URLs, usernames, etc.)
-    is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
-    if is_valid_fb:
-        return 'facebook_link', fb_normalized
+    # 2. Check for Facebook URL (with facebook.com) - check BEFORE Telegram username
+    # This handles URLs like https://www.facebook.com/username
+    value_lower = value_stripped.lower()
+    has_url_patterns = (
+        'facebook.com' in value_lower or
+        'http://' in value_lower or
+        'https://' in value_lower or
+        'www.' in value_lower
+    )
+    
+    if has_url_patterns:
+        # This is likely a Facebook URL - validate it
+        is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
+        if is_valid_fb:
+            return 'facebook_link', fb_normalized
     
     # 3. Check if value contains Cyrillic characters - if yes, prioritize as fullname
     # Cyrillic characters are in range \u0400-\u04FF
@@ -571,6 +718,7 @@ def detect_search_type(value: str) -> tuple[str, str]:
     
     # 4. Check for Telegram username (letters, digits, underscores, no spaces, may start with @)
     # Skip if contains Cyrillic - it's definitely not a Telegram username
+    # Check Telegram username BEFORE Facebook username without URL (priority)
     if not has_cyrillic:
         # Remove @ if present
         username_candidate = value_stripped.replace('@', '').strip()
@@ -584,7 +732,14 @@ def detect_search_type(value: str) -> tuple[str, str]:
                 if is_valid_tg:
                     return 'telegram_user', tg_normalized
     
-    # 5. Check for fullname (contains spaces or letters, not just digits)
+    # 5. Check for Facebook username without URL (only if not Telegram username)
+    # This handles cases like "markl1n" that could be Facebook username
+    if not has_url_patterns:
+        is_valid_fb, _, fb_normalized = validate_facebook_link(value_stripped)
+        if is_valid_fb:
+            return 'facebook_link', fb_normalized
+    
+    # 6. Check for fullname (contains spaces or letters, not just digits)
     # If it contains spaces or has letters (not just digits), it's likely a name
     if ' ' in value_stripped or any(c.isalpha() for c in value_stripped):
         # Normalize text field
@@ -592,7 +747,7 @@ def detect_search_type(value: str) -> tuple[str, str]:
         if normalized and len(normalized) >= 3:  # Minimum 3 characters for name search
             return 'fullname', normalized
     
-    # 6. Unknown - cannot determine type
+    # 7. Unknown - cannot determine type
     return 'unknown', value_stripped
 
 def get_field_format_requirements(field_name: str) -> str:
@@ -671,24 +826,25 @@ def is_field_filled(user_data: dict, field_name: str) -> bool:
     value = user_data.get(field_name)
     return value is not None and value != '' and str(value).strip() != ''
 
-def get_next_add_field(current_field: str, skip_facebook_link: bool = True) -> tuple[str, int, int, int]:
+def get_next_add_field(current_field: str, skip_facebook_link: bool = False) -> tuple[str, int, int, int]:
     """Get next field in the add flow. Returns (field_name, state, current_step, total_steps)
     
     Args:
         current_field: Current field name
         skip_facebook_link: If True, skip facebook_link field (for forwarded messages)
-        # Default is True - facebook_link step is temporarily disabled
     """
     field_sequence = [
         ('fullname', ADD_FULLNAME),
-        # ('facebook_link', ADD_FB_LINK),  # Temporarily disabled
+    ]
+    if is_facebook_flow_enabled():
+        field_sequence.append(('facebook_link', ADD_FB_LINK))
+    field_sequence.extend([
         ('telegram_name', ADD_TELEGRAM_NAME),
         ('telegram_id', ADD_TELEGRAM_ID),
-    ]
+    ])
     
-    # Filter out facebook_link if skip_facebook_link is True
-    # Note: facebook_link is already commented out above, but keeping this logic for consistency
-    if skip_facebook_link:
+    # Filter out facebook_link if skip_facebook_link is True or Facebook flow is disabled
+    if skip_facebook_link or not is_facebook_flow_enabled():
         field_sequence = [f for f in field_sequence if f[0] != 'facebook_link']
     
     total_steps = len(field_sequence) + 1  # +1 for review step
@@ -768,6 +924,9 @@ user_data_store = {}
 user_data_store_access_time = {}
 USER_DATA_STORE_TTL = 3600  # 1 hour in seconds
 USER_DATA_STORE_MAX_SIZE = 1000  # Maximum number of entries
+
+# Cleanup configuration
+CLEANUP_INTERVAL_MINUTES = int(os.environ.get('CLEANUP_INTERVAL_MINUTES', 10))  # Default: 10 minutes
 
 # Main menu keyboard
 def get_main_menu_keyboard():
@@ -1139,7 +1298,9 @@ async def check_add_state_entry(update: Update, context: ContextTypes.DEFAULT_TY
         return None
     
     # Edit flow states
-    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_FB_LINK, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    if is_facebook_flow_enabled():
+        edit_states.add(EDIT_FB_LINK)
     if current_state in edit_states:
         logger.info(
             f"[CHECK_ADD_STATE_ENTRY] User {user_id} is in edit flow (state={current_state}), "
@@ -1148,7 +1309,9 @@ async def check_add_state_entry(update: Update, context: ContextTypes.DEFAULT_TY
         return None
     
     # Conversation states that belong to the add flow
-    add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    if is_facebook_flow_enabled():
+        add_states.add(ADD_FB_LINK)
     
     # If user has add data and current_state points to add flow – handle this update there
     if user_id in user_data_store and current_state in add_states:
@@ -1192,7 +1355,9 @@ async def check_add_state_entry_callback(update: Update, context: ContextTypes.D
         return None
     
     # Conversation states that belong to the add flow
-    add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    if is_facebook_flow_enabled():
+        add_states.add(ADD_FB_LINK)
     
     # If user has add state, activate ConversationHandler AND process the callback
     if user_id in user_data_store and current_state in add_states:
@@ -1239,6 +1404,31 @@ async def check_add_state_entry_callback(update: Update, context: ContextTypes.D
             # Delegate to edit_fullname_from_review_callback
             logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing edit_fullname_from_review callback for user {user_id} in state {current_state}")
             result = await edit_fullname_from_review_callback(update, context)
+            return result if result is not None else current_state
+        elif callback_data == "add_edit_field_fullname":
+            # Delegate to add_edit_field_fullname_from_review_callback
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_edit_field_fullname callback for user {user_id} in state {current_state}")
+            result = await add_edit_field_fullname_from_review_callback(update, context)
+            return result if result is not None else current_state
+        elif callback_data == "add_edit_field_telegram_name":
+            # Delegate to add_edit_field_telegram_name_from_review_callback
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_edit_field_telegram_name callback for user {user_id} in state {current_state}")
+            result = await add_edit_field_telegram_name_from_review_callback(update, context)
+            return result if result is not None else current_state
+        elif callback_data == "add_edit_field_telegram_id":
+            # Delegate to add_edit_field_telegram_id_from_review_callback
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_edit_field_telegram_id callback for user {user_id} in state {current_state}")
+            result = await add_edit_field_telegram_id_from_review_callback(update, context)
+            return result if result is not None else current_state
+        elif callback_data == "add_edit_field_fb_link":
+            # Delegate to add_edit_field_fb_link_from_review_callback
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_edit_field_fb_link callback for user {user_id} in state {current_state}")
+            result = await add_edit_field_fb_link_from_review_callback(update, context)
+            return result if result is not None else current_state
+        elif callback_data == "add_edit_back_to_review":
+            # Delegate to add_edit_back_to_review_callback
+            logger.info(f"[CHECK_ADD_STATE_ENTRY_CALLBACK] Processing add_edit_back_to_review callback for user {user_id} in state {current_state}")
+            result = await add_edit_back_to_review_callback(update, context)
             return result if result is not None else current_state
         
         # If callback doesn't match, just activate ConversationHandler
@@ -1316,6 +1506,60 @@ def extract_data_from_forwarded_message(update: Update) -> tuple[dict, list]:
     
     return extracted_data, extracted_info
 
+def extract_data_from_photo_message(update: Update) -> tuple[dict, list]:
+    """
+    Extract data from regular photo message (not forwarded).
+    Returns (extracted_data dict, extracted_info list for display)
+    """
+    extracted_data = {}
+    extracted_info = []
+    
+    # Extract fullname from text or caption
+    if update.message.text:
+        text = update.message.text.strip()
+        normalized_fullname = normalize_text_field(text)
+        if normalized_fullname:
+            extracted_data['fullname'] = normalized_fullname
+            extracted_info.append(f"• Имя: {normalized_fullname}")
+            logger.info(f"[EXTRACT_PHOTO_DATA] Extracted fullname from text: {normalized_fullname}")
+    
+    if update.message.caption and 'fullname' not in extracted_data:
+        caption = update.message.caption.strip()
+        normalized_fullname = normalize_text_field(caption)
+        if normalized_fullname:
+            extracted_data['fullname'] = normalized_fullname
+            extracted_info.append(f"• Имя: {normalized_fullname}")
+            logger.info(f"[EXTRACT_PHOTO_DATA] Extracted fullname from caption: {normalized_fullname}")
+    
+    # Extract Facebook link from text/caption
+    if update.message.text:
+        text = update.message.text.strip()
+        is_valid_fb, _, fb_normalized = validate_facebook_link(text)
+        if is_valid_fb:
+            extracted_data['facebook_link'] = fb_normalized
+            extracted_info.append(f"• Facebook ссылка: {format_facebook_link_for_display(fb_normalized)}")
+            logger.info(f"[EXTRACT_PHOTO_DATA] Extracted facebook_link from text: {fb_normalized}")
+    
+    if update.message.caption and 'facebook_link' not in extracted_data:
+        caption = update.message.caption.strip()
+        is_valid_fb, _, fb_normalized = validate_facebook_link(caption)
+        if is_valid_fb:
+            extracted_data['facebook_link'] = fb_normalized
+            extracted_info.append(f"• Facebook ссылка: {format_facebook_link_for_display(fb_normalized)}")
+            logger.info(f"[EXTRACT_PHOTO_DATA] Extracted facebook_link from caption: {fb_normalized}")
+    
+    # Extract photo
+    if update.message.photo:
+        largest_photo = update.message.photo[-1]
+        photo_file_id = largest_photo.file_id
+        extracted_data['photo_file_id'] = photo_file_id
+        extracted_data['had_photo'] = True  # Mark that photo was extracted
+        extracted_info.append("• Фото: обнаружено (будет загружено при сохранении)")
+        logger.info(f"[EXTRACT_PHOTO_DATA] Extracted photo_file_id: {photo_file_id}, marked had_photo=True")
+    
+    return extracted_data, extracted_info
+
+@rate_limit_handler
 async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle forwarded messages globally - extract data and start add flow if needed"""
     if not update.message:
@@ -1362,11 +1606,15 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
     current_state = context.user_data.get('current_state')
     
     # Edit flow states
-    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_FB_LINK, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    if is_facebook_flow_enabled():
+        edit_states.add(EDIT_FB_LINK)
     # Tag flow states
     tag_states = {TAG_SELECT_MANAGER, TAG_ENTER_NEW}
     # Add flow states
-    add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    if is_facebook_flow_enabled():
+        add_states.add(ADD_FB_LINK)
     
     # Check if user is in edit flow
     if current_state in edit_states or context.user_data.get('editing_lead_id'):
@@ -1645,6 +1893,7 @@ async def handle_forwarded_message(update: Update, context: ContextTypes.DEFAULT
         )
         return None
 
+@rate_limit_handler
 async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle regular (not forwarded) photo messages - start add lead flow"""
     if not update.message:
@@ -1668,9 +1917,13 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Check if user is in another active ConversationHandler
     current_state = context.user_data.get('current_state')
-    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_FB_LINK, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+    if is_facebook_flow_enabled():
+        edit_states.add(EDIT_FB_LINK)
     tag_states = {TAG_SELECT_MANAGER, TAG_ENTER_NEW}
-    add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    if is_facebook_flow_enabled():
+        add_states.add(ADD_FB_LINK)
     
     # Check if user is in edit flow
     if current_state in edit_states or context.user_data.get('editing_lead_id'):
@@ -1702,15 +1955,32 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return None
     
+    # Check if user is in check flow (SMART_CHECK_INPUT)
+    if current_state == SMART_CHECK_INPUT:
+        logger.info(
+            f"[PHOTO_MESSAGE] User {user_id} is in check flow (SMART_CHECK_INPUT), "
+            f"letting ConversationHandler handle photo"
+        )
+        return None  # Let ConversationHandler handle it (handle_photo_during_check)
+    
+    # If user is in main menu and photo has no text/caption, return to main menu
+    has_text = bool(update.message.text and update.message.text.strip())
+    has_caption = bool(update.message.caption and update.message.caption.strip())
+    if not has_text and not has_caption:
+        await update.message.reply_text(
+            "⚠️ Скриншот без текста. Возврат в главное меню.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return None
+
+    # User is in main menu - show action selection
+    # Extract photo and data, show selection menu
+    logger.info(f"[PHOTO_MESSAGE] User {user_id} is in main menu, showing action selection")
+    
     # Extract photo
     largest_photo = update.message.photo[-1]
     photo_file_id = largest_photo.file_id
     logger.info(f"[PHOTO_MESSAGE] Extracted photo_file_id: {photo_file_id} for user {user_id}")
-    
-    # Check if message has text or caption
-    has_text = bool(update.message.text and update.message.text.strip())
-    has_caption = bool(update.message.caption and update.message.caption.strip())
-    logger.info(f"[PHOTO_MESSAGE] Scenario: {'with text' if (has_text or has_caption) else 'without text'} for user {user_id}")
     
     # Protect photo_file_id from being lost if user_data_store is recreated
     saved_photo_file_id = None
@@ -1718,75 +1988,63 @@ async def handle_photo_message(update: Update, context: ContextTypes.DEFAULT_TYP
         saved_photo_file_id = user_data_store[user_id]['photo_file_id']
         logger.info(f"[PHOTO_MESSAGE] Preserving existing photo_file_id: {saved_photo_file_id}")
     
-    # Initialize add flow
-    clear_all_conversation_state(context, user_id)
-    user_data_store[user_id] = {}
-    user_data_store_access_time[user_id] = time.time()
-    user_data_store[user_id]['photo_file_id'] = photo_file_id  # Новое фото
+    # Initialize user_data_store for photo
+    if user_id not in user_data_store:
+        user_data_store[user_id] = {}
+        user_data_store_access_time[user_id] = time.time()
+    
+    user_data_store[user_id]['photo_file_id'] = photo_file_id
+    user_data_store[user_id]['had_photo'] = True
     
     # Log if old photo_file_id was replaced
     if saved_photo_file_id:
         logger.info(f"[PHOTO_MESSAGE] Old photo_file_id was replaced: {saved_photo_file_id} -> {photo_file_id}")
     
-    if has_text or has_caption:
-        # Сценарий 2: Фото с текстом - использовать текст как fullname, начать с шага 2
-        text = (update.message.text or update.message.caption).strip()
-        normalized_fullname = normalize_text_field(text)
-        if normalized_fullname:
-            user_data_store[user_id]['fullname'] = normalized_fullname
-            # Facebook link step temporarily disabled
-            context.user_data['current_field'] = 'telegram_name'
-            context.user_data['current_state'] = ADD_TELEGRAM_NAME
-            context.user_data['add_step'] = 1
-            
-            field_label = get_field_label('telegram_name')
-            _, _, current_step, total_steps = get_next_add_field('fullname')
-            requirements = get_field_format_requirements('telegram_name')
-            
-            await update.message.reply_text(
-                f"✅ Фото получено. Имя извлечено из текста: <code>{escape_html(normalized_fullname)}</code>\n\n"
-                f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
-                f"📝 Введите {field_label}:\n\n{requirements}",
-                reply_markup=get_navigation_keyboard(is_optional=True, show_back=False),
-                parse_mode='HTML'
-            )
-        else:
-            # Если текст не удалось нормализовать, начать с шага 1
-            context.user_data['current_field'] = 'fullname'
-            context.user_data['current_state'] = ADD_FULLNAME
-            context.user_data['add_step'] = 0
-            
-            field_label = get_field_label('fullname')
-            _, _, current_step, total_steps = get_next_add_field('')
-            
-            await update.message.reply_text(
-                f"✅ Фото получено.\n\n"
-                f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
-                f"📝 Введите {field_label}:",
-                reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
-                parse_mode='HTML'
-            )
-    else:
-        # Сценарий 1: Фото без текста - начать с шага 1
-        context.user_data['current_field'] = 'fullname'
-        context.user_data['current_state'] = ADD_FULLNAME
-        context.user_data['add_step'] = 0
-        
-        field_label = get_field_label('fullname')
-        _, _, current_step, total_steps = get_next_add_field('')
-        
-        await update.message.reply_text(
-            f"✅ Фото получено.\n\n"
-            f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
-            f"📝 Введите {field_label}:",
-            reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
-            parse_mode='HTML'
-        )
+    # Extract data using helper function
+    extracted_data, extracted_info = extract_data_from_photo_message(update)
     
-    logger.info(f"[PHOTO_MESSAGE] Started add flow for user {user_id} with photo (scenario: {'with text' if (has_text or has_caption) else 'without text'})")
+    # Save extracted data to user_data_store
+    for key, value in extracted_data.items():
+        user_data_store[user_id][key] = value
+    
+    # Update access time
+    user_data_store_access_time[user_id] = time.time()
+    
+    # Save extracted data in context for callback handlers
+    context.user_data['photo_extracted_data'] = extracted_data
+    
+    logger.info(f"[PHOTO_MESSAGE] Saved extracted data to user_data_store for user {user_id}: {list(extracted_data.keys())}")
+    
+    # Check if we have any fields for checking (fullname, telegram_name, telegram_id)
+    has_checkable_fields = any(field in extracted_data for field in ['fullname', 'telegram_name', 'telegram_id'])
+    
+    # Build message
+    if extracted_info:
+        info_text = "\n".join(extracted_info)
+        message = f"✅ <b>Данные извлечены</b> из фото:\n\n{info_text}\n\n💡 <b>Выберите действие:</b>"
+    else:
+        message = "✅ <b>Фото получено</b>.\n\n💡 <b>Выберите действие:</b>"
+    
+    # Build keyboard
+    keyboard = []
+    if has_checkable_fields:
+        keyboard.append([
+            InlineKeyboardButton("➕ Добавить", callback_data="photo_add"),
+            InlineKeyboardButton("✅ Проверить", callback_data="photo_check")
+        ])
+    else:
+        keyboard.append([InlineKeyboardButton("➕ Добавить", callback_data="photo_add")])
+    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
     return None
 
 # Command handlers
+@rate_limit_handler
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command - show main menu"""
     try:
@@ -2266,6 +2524,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Callback query handlers
+@rate_limit_handler
 async def check_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle check_menu callback - start smart check input"""
     query = update.callback_query
@@ -2323,6 +2582,7 @@ async def check_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     return SMART_CHECK_INPUT
 
+@rate_limit_handler
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button callbacks for menu navigation"""
     query = update.callback_query
@@ -2480,11 +2740,20 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
             # Return None to let ConversationHandler process it
             return None
         
-        # Special handling for add_skip, add_back, add_cancel, add_save, add_save_force - try to activate ConversationHandler
-        if callback_data in ["add_skip", "add_back", "add_cancel", "add_save", "add_save_force"]:
+        # Special handling for add flow callbacks - try to activate ConversationHandler
+        # Includes all callbacks from add flow states (ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW)
+        add_flow_callbacks = [
+            "add_skip", "add_back", "add_cancel", "add_save", "add_save_force",
+            "edit_fullname_from_review", "add_edit_field_fullname", 
+            "add_edit_field_telegram_name", "add_edit_field_telegram_id", 
+            "add_edit_field_fb_link", "add_edit_back_to_review"
+        ]
+        if callback_data in add_flow_callbacks:
             logger.info(f"[UNKNOWN_CALLBACK] {callback_data} callback not handled by ConversationHandler, checking for add state for user {user_id}")
             # Check if user has add state initialized
-            add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+            add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+            if is_facebook_flow_enabled():
+                add_states.add(ADD_FB_LINK)
             
             logger.info(
                 f"[UNKNOWN_CALLBACK] Checking add state - current_state={current_state}, "
@@ -2545,9 +2814,93 @@ async def unknown_callback_handler(update: Update, context: ContextTypes.DEFAULT
                     f"current_state={current_state} (not in add_states: {current_state not in add_states if current_state else 'None'}), "
                     f"user_data_store_exists={user_data_store_exists}"
                 )
+                # No valid add state - clear and show main menu
+                if user_id:
+                    clear_all_conversation_state(context, user_id)
+                try:
+                    await retry_telegram_api(query.answer, text="⚠️ Сессия истекла. Начните заново.", show_alert=True)
+                    if query.message:
+                        await retry_telegram_api(
+                            query.edit_message_text,
+                            text="⚠️ Сессия истекла.\n\nИспользуйте кнопки меню для навигации.",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                except:
+                    pass
+                return ConversationHandler.END
+        
+        # Special handling for edit flow callbacks - try to activate ConversationHandler
+        # Includes all callbacks from edit flow states (EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_FB_LINK, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME)
+        edit_flow_callbacks = [
+            "edit_field_fullname", "edit_field_telegram_name", "edit_field_telegram_id",
+            "edit_field_fb_link", "edit_field_manager", "edit_save", "edit_cancel"
+        ]
+        # Check if callback matches edit_lead_<id> pattern
+        is_edit_lead_entry = callback_data.startswith("edit_lead_") and callback_data.replace("edit_lead_", "").isdigit()
+        
+        if callback_data in edit_flow_callbacks or is_edit_lead_entry:
+            logger.info(f"[UNKNOWN_CALLBACK] {callback_data} callback not handled by ConversationHandler, checking for edit state for user {user_id}")
+            # Check if user has edit state initialized
+            edit_states = {EDIT_PIN, EDIT_MENU, EDIT_FULLNAME, EDIT_TELEGRAM_NAME, EDIT_TELEGRAM_ID, EDIT_MANAGER_NAME}
+            if is_facebook_flow_enabled():
+                edit_states.add(EDIT_FB_LINK)
+            
+            editing_lead_id = context.user_data.get('editing_lead_id') if context.user_data else None
+            
+            logger.info(
+                f"[UNKNOWN_CALLBACK] Checking edit state - current_state={current_state}, "
+                f"is_edit_state={current_state in edit_states if current_state else False}, "
+                f"editing_lead_id={editing_lead_id}"
+            )
+            
+            # For edit_lead_<id> entry point, always try to activate ConversationHandler
+            # For other edit callbacks, check if user is in edit flow
+            if is_edit_lead_entry or (current_state in edit_states) or editing_lead_id:
+                logger.info(
+                    f"[UNKNOWN_CALLBACK] User {user_id} has edit state or editing_lead_id, "
+                    f"current_state={current_state}, editing_lead_id={editing_lead_id}, "
+                    f"trying to activate ConversationHandler for callback: {callback_data}"
+                )
+                
+                # Clear stale ConversationHandler internal keys
+                if context.user_data:
+                    keys_to_remove = [key for key in context.user_data.keys() if key.startswith('_conversation_')]
+                    logger.info(f"[UNKNOWN_CALLBACK] Clearing {len(keys_to_remove)} stale ConversationHandler keys for edit flow")
+                    for key in keys_to_remove:
+                        del context.user_data[key]
+                
+                # Answer callback and let ConversationHandler process it
+                try:
+                    await retry_telegram_api(query.answer)
+                except:
+                    pass
+                
+                # Return None to let ConversationHandler process it
+                logger.info(f"[UNKNOWN_CALLBACK] Returning None to let ConversationHandler process edit callback: {callback_data}")
+                return None
+            else:
+                logger.warning(
+                    f"[UNKNOWN_CALLBACK] Cannot activate ConversationHandler for {callback_data} - "
+                    f"current_state={current_state} (not in edit_states: {current_state not in edit_states if current_state else 'None'}), "
+                    f"editing_lead_id={editing_lead_id}"
+                )
+                # No valid edit state - clear and show main menu
+                if user_id:
+                    clear_all_conversation_state(context, user_id)
+                try:
+                    await retry_telegram_api(query.answer, text="⚠️ Сессия истекла. Начните редактирование заново.", show_alert=True)
+                    if query.message:
+                        await retry_telegram_api(
+                            query.edit_message_text,
+                            text="⚠️ Сессия редактирования истекла.\n\nИспользуйте кнопки меню для навигации.",
+                            reply_markup=get_main_menu_keyboard()
+                        )
+                except:
+                    pass
+                return ConversationHandler.END
         else:
             # No valid add state - clear and show main menu
-            logger.warning(f"[UNKNOWN_CALLBACK] {callback_data} callback but no valid add state for user {user_id}")
+            logger.warning(f"[UNKNOWN_CALLBACK] {callback_data} callback but no valid add/edit state for user {user_id}")
             if user_id:
                 clear_all_conversation_state(context, user_id)
             try:
@@ -2871,6 +3224,7 @@ async def check_fullname_callback(update: Update, context: ContextTypes.DEFAULT_
     return CHECK_BY_FULLNAME
 
 # Add callback - new sequential flow
+@rate_limit_handler
 async def add_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start adding new lead - sequential flow"""
     query = update.callback_query
@@ -3004,16 +3358,16 @@ async def add_from_check_photo_callback(update: Update, context: ContextTypes.DE
         if 'check_photo_caption' in context.user_data:
             del context.user_data['check_photo_caption']
         
-        # Set state to ADD_TELEGRAM_NAME (skip fullname step since it's already filled)
-        # Facebook link step is temporarily disabled
-        context.user_data['current_field'] = 'telegram_name'
-        context.user_data['current_state'] = ADD_TELEGRAM_NAME
-        context.user_data['add_step'] = 1
+        # Use get_next_add_field to determine next field after fullname (respects FACEBOOK_FLOW)
+        # skip_facebook_link=False because this is not a forwarded message
+        next_field, next_state, current_step, total_steps = get_next_add_field('fullname', skip_facebook_link=False)
+        context.user_data['current_field'] = next_field
+        context.user_data['current_state'] = next_state
+        context.user_data['add_step'] = current_step - 1
         
-        # Get next field info (telegram_name)
-        field_label = get_field_label('telegram_name')
-        _, _, current_step, total_steps = get_next_add_field('fullname')
-        requirements = get_field_format_requirements('telegram_name')
+        # Get next field info
+        field_label = get_field_label(next_field)
+        requirements = get_field_format_requirements(next_field)
         
         # Show message with saved name and prompt for next field
         message = (
@@ -3081,15 +3435,41 @@ async def check_by_multiple_fields(update: Update, context: ContextTypes.DEFAULT
         normalized_fullname = None
         normalized_facebook_link = None
         
-        # Try Facebook link normalization FIRST (before Telegram ID, as Facebook IDs are 14+ digits)
-        is_valid_fb, _, fb_normalized = validate_facebook_link(search_value)
-        if is_valid_fb:
-            normalized_facebook_link = fb_normalized
+        # Check if value has URL patterns (Facebook URL vs plain username)
+        value_lower = search_value.lower()
+        has_url_patterns = (
+            'facebook.com' in value_lower or
+            'http://' in value_lower or
+            'https://' in value_lower or
+            'www.' in value_lower
+        )
         
-        # Try Telegram username normalization
+        # ALWAYS try to normalize as Telegram username (even if it's a Facebook URL)
+        # This ensures we search in telegram_user column with proper normalization
         is_valid_tg_user, _, tg_user_normalized = validate_telegram_name(search_value)
         if is_valid_tg_user:
             normalized_tg_user = tg_user_normalized
+            logger.info(f"[MULTI_FIELD_SEARCH] Value can be normalized as telegram_user: '{tg_user_normalized}'")
+        
+        # Try Facebook link normalization
+        # If it has URL patterns, it's definitely a Facebook URL
+        # If it doesn't have URL patterns, it might be Facebook username (ambiguous case)
+        is_valid_fb, _, fb_normalized = validate_facebook_link(search_value)
+        if is_valid_fb:
+            normalized_facebook_link = fb_normalized
+            logger.info(f"[MULTI_FIELD_SEARCH] Value can be normalized as facebook_link: '{fb_normalized}'")
+            
+            # If it's a Facebook URL (has URL patterns), also search in telegram_user with original value
+            # This handles cases where Facebook URLs were incorrectly saved to telegram_user column
+            if has_url_patterns:
+                # Don't override normalized_tg_user if we already have it
+                # But we'll search with original value too in the search section below
+                logger.info(f"[MULTI_FIELD_SEARCH] Facebook URL detected, will also search telegram_user with original value")
+        
+        # If value is ambiguous (valid as both Telegram and Facebook username without URL)
+        # We already have both normalizations, so we'll search in both columns
+        if is_valid_tg_user and is_valid_fb and not has_url_patterns:
+            logger.info(f"[MULTI_FIELD_SEARCH] Ambiguous value: valid as both telegram_user and facebook_link (without URL), will search in both columns")
         
         # Try Telegram ID normalization (only if not already identified as Facebook ID)
         # Telegram ID = 10 digits, Facebook ID = 14+ digits
@@ -3117,16 +3497,34 @@ async def check_by_multiple_fields(update: Update, context: ContextTypes.DEFAULT
         seen_ids = set()
         
         # Search in telegram_user (exact match)
+        # Search with normalized Telegram username value
         if normalized_tg_user:
             try:
+                logger.info(f"[MULTI_FIELD_SEARCH] Searching telegram_user with normalized value: '{normalized_tg_user}'")
                 response = client.table(TABLE_NAME).select("*").eq("telegram_user", normalized_tg_user).limit(50).execute()
                 if response.data:
+                    logger.info(f"[MULTI_FIELD_SEARCH] Found {len(response.data)} results in telegram_user with normalized value")
                     for item in response.data:
                         if item.get('id') not in seen_ids:
                             all_results.append(item)
                             seen_ids.add(item.get('id'))
             except Exception as e:
                 logger.warning(f"[MULTI_FIELD_SEARCH] Error searching telegram_user: {e}")
+        
+        # If it's a Facebook URL, also search in telegram_user with original value
+        # This handles cases where Facebook URLs were incorrectly saved to telegram_user column
+        if is_valid_fb and has_url_patterns:
+            try:
+                logger.info(f"[MULTI_FIELD_SEARCH] Searching telegram_user with original value (Facebook URL): '{search_value}'")
+                response = client.table(TABLE_NAME).select("*").eq("telegram_user", search_value).limit(50).execute()
+                if response.data:
+                    logger.info(f"[MULTI_FIELD_SEARCH] Found {len(response.data)} results in telegram_user with original value")
+                    for item in response.data:
+                        if item.get('id') not in seen_ids:
+                            all_results.append(item)
+                            seen_ids.add(item.get('id'))
+            except Exception as e:
+                logger.warning(f"[MULTI_FIELD_SEARCH] Error searching telegram_user with original value: {e}")
         
         # Search in telegram_id (exact match)
         if normalized_tg_id:
@@ -3464,37 +3862,112 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
     
     # Normalize Telegram Name if checking by telegram_user
     elif field_name == "telegram_user":
-        # Use same normalization as when adding (remove @, spaces)
-        is_valid, error_msg, normalized = validate_telegram_name(search_value)
-        if not is_valid:
-            logger.warning(f"[{search_type}] ❌ Validation failed: {error_msg}")
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
-            sent_message = await update.message.reply_text(
-                f"❌ {error_msg}",
-                reply_markup=keyboard
-            )
-            await save_check_message(update, context, sent_message.message_id)
-            return ConversationHandler.END
-        search_value = normalized
-        logger.info(f"[{search_type}] Normalized Telegram username: '{normalized}'")
+        # First check if the input is a Facebook URL
+        # This handles cases where Facebook URLs were incorrectly saved to telegram_user column
+        is_fb_url, _, fb_normalized = validate_facebook_link(search_value)
+        response_data = None  # Initialize for later use
+        
+        if is_fb_url:
+            # Search in both telegram_user (as-is, in case URL was saved there) 
+            # and facebook_link (normalized, in case it was saved correctly)
+            client = get_supabase_client()
+            if not client:
+                error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
+                await update.message.reply_text(
+                    error_msg,
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+                return ConversationHandler.END
+            
+            all_results = []
+            seen_ids = set()
+            
+            # Search in telegram_user with original value (in case URL was saved there)
+            logger.info(f"[{search_type}] Searching telegram_user with original value: '{search_value}'")
+            try:
+                response = client.table(TABLE_NAME).select("*").eq("telegram_user", search_value).limit(50).execute()
+                if response.data:
+                    for item in response.data:
+                        if item.get('id') not in seen_ids:
+                            all_results.append(item)
+                            seen_ids.add(item.get('id'))
+                    logger.info(f"[{search_type}] Found {len(response.data)} results in telegram_user with original value")
+            except Exception as e:
+                logger.warning(f"[{search_type}] Error searching telegram_user with original value: {e}")
+            
+            # Also search in facebook_link with normalized value
+            logger.info(f"[{search_type}] Searching facebook_link with normalized value: '{fb_normalized}'")
+            try:
+                response = client.table(TABLE_NAME).select("*").eq("facebook_link", fb_normalized).limit(50).execute()
+                if response.data:
+                    for item in response.data:
+                        if item.get('id') not in seen_ids:
+                            all_results.append(item)
+                            seen_ids.add(item.get('id'))
+                    logger.info(f"[{search_type}] Found {len(response.data)} results in facebook_link with normalized value")
+            except Exception as e:
+                logger.warning(f"[{search_type}] Error searching facebook_link with normalized value: {e}")
+            
+            # Use all_results instead of response.data
+            response_data = all_results
+            logger.info(f"[{search_type}] Total unique results: {len(response_data)}")
+        else:
+            # Normal Telegram username - use existing logic
+            is_valid, error_msg, normalized = validate_telegram_name(search_value)
+            if not is_valid:
+                logger.warning(f"[{search_type}] ❌ Validation failed: {error_msg}")
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]])
+                sent_message = await update.message.reply_text(
+                    f"❌ {error_msg}",
+                    reply_markup=keyboard
+                )
+                await save_check_message(update, context, sent_message.message_id)
+                return ConversationHandler.END
+            search_value = normalized
+            logger.info(f"[{search_type}] Normalized Telegram username: '{normalized}'")
+            
+            # Get Supabase client
+            client = get_supabase_client()
+            if not client:
+                error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
+                await update.message.reply_text(
+                    error_msg,
+                    reply_markup=get_main_menu_keyboard(),
+                    parse_mode='HTML'
+                )
+                return ConversationHandler.END
+            
+            # For normal Telegram username: exact match, limit to 50 results
+            logger.info(f"[{search_type}] Executing query: SELECT * FROM {TABLE_NAME} WHERE {db_field_name} = '{search_value}' LIMIT 50")
+            response = client.table(TABLE_NAME).select("*").eq(db_field_name, search_value).limit(50).execute()
+            logger.info(f"[{search_type}] Query executed. Response type: {type(response)}, has data: {hasattr(response, 'data')}")
+            logger.info(f"[{search_type}] Response.data length: {len(response.data) if hasattr(response, 'data') and response.data else 0}")
+            response_data = response.data if response.data else []
     
-    # Get Supabase client (for all fields, not just phone)
-    client = get_supabase_client()
-    if not client:
-        error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
-        await update.message.reply_text(
-            error_msg,
-            reply_markup=get_main_menu_keyboard(),
-            parse_mode='HTML'
-        )
-        return ConversationHandler.END
+    # Get Supabase client (for all other fields, not telegram_user)
+    if field_name != "telegram_user":
+        client = get_supabase_client()
+        if not client:
+            error_msg = get_user_friendly_error(Exception("Database connection failed"), "подключении к базе данных")
+            await update.message.reply_text(
+                error_msg,
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode='HTML'
+            )
+            return ConversationHandler.END
     
     try:
-        # For all fields: exact match, limit to 50 results
-        logger.info(f"[{search_type}] Executing query: SELECT * FROM {TABLE_NAME} WHERE {db_field_name} = '{search_value}' LIMIT 50")
-        response = client.table(TABLE_NAME).select("*").eq(db_field_name, search_value).limit(50).execute()
-        logger.info(f"[{search_type}] Query executed. Response type: {type(response)}, has data: {hasattr(response, 'data')}")
-        logger.info(f"[{search_type}] Response.data length: {len(response.data) if hasattr(response, 'data') and response.data else 0}")
+        # For all other fields: exact match, limit to 50 results
+        if field_name != "telegram_user":
+            logger.info(f"[{search_type}] Executing query: SELECT * FROM {TABLE_NAME} WHERE {db_field_name} = '{search_value}' LIMIT 50")
+            response = client.table(TABLE_NAME).select("*").eq(db_field_name, search_value).limit(50).execute()
+            logger.info(f"[{search_type}] Query executed. Response type: {type(response)}, has data: {hasattr(response, 'data')}")
+            logger.info(f"[{search_type}] Response.data length: {len(response.data) if hasattr(response, 'data') and response.data else 0}")
+            response_data = response.data if response.data else []
+        elif field_name == "telegram_user" and not is_fb_url:
+            # This case is already handled above in the else branch
+            pass
         
         # Field labels mapping (Russian) - use database column names
         field_labels = {
@@ -3508,8 +3981,8 @@ async def check_by_field(update: Update, context: ContextTypes.DEFAULT_TYPE, fie
             'created_at': 'Дата'
         }
         
-        if response.data and len(response.data) > 0:
-            results = response.data
+        if response_data and len(response_data) > 0:
+            results = response_data
             photo_url = None  # Initialize for multiple results case
             
             # If multiple results, show all
@@ -3777,6 +4250,11 @@ async def check_by_fullname(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if is_valid_fb:
             normalized_fb_link = fb_normalized
             logger.info(f"[FULLNAME SEARCH] Value can also be normalized as facebook_link: '{normalized_fb_link}'")
+            # Also try to search in telegram_user with original value (in case URL was saved there)
+            # This handles cases where Facebook URLs were incorrectly saved to telegram_user column
+            if not normalized_tg_user:  # Only set if not already set
+                normalized_tg_user = search_value
+                logger.info(f"[FULLNAME SEARCH] Will also search in telegram_user with original value: '{search_value}'")
         
         # Search across all fields where normalization succeeded
         # Supabase Python client doesn't support .or() directly, so we use multiple queries and combine results
@@ -4177,6 +4655,7 @@ async def check_fullname_input(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     return await check_by_fullname(update, context)
 
+@rate_limit_handler
 async def smart_check_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Smart check input handler - automatically detects type and searches accordingly"""
     if not update.message or not update.message.text:
@@ -4187,7 +4666,9 @@ async def smart_check_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_state = context.user_data.get('current_state')
     
     # Check if user is in ADD flow - if yes, don't process as check
-    add_states = {ADD_FULLNAME, ADD_FB_LINK, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    add_states = {ADD_FULLNAME, ADD_TELEGRAM_NAME, ADD_TELEGRAM_ID, ADD_REVIEW}
+    if is_facebook_flow_enabled():
+        add_states.add(ADD_FB_LINK)
     if user_id in user_data_store and current_state in add_states:
         logger.info(f"[SMART_CHECK] User {user_id} is in ADD flow (state={current_state}), not processing as check")
         return None  # Return None to let ADD flow handler process it
@@ -4214,8 +4695,32 @@ async def smart_check_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"[SMART_CHECK] Detected type: '{field_type}' for value: '{search_value}' (normalized: '{normalized_value}')")
     
+    # Check if value is ambiguous (could be both Telegram and Facebook username without URL)
+    # If so, use multi-field search to search in both columns
+    value_lower = search_value.lower()
+    has_url_patterns = (
+        'facebook.com' in value_lower or
+        'http://' in value_lower or
+        'https://' in value_lower or
+        'www.' in value_lower
+    )
+    
+    is_ambiguous = False
+    if field_type == 'facebook_link' and not has_url_patterns:
+        # Facebook username without URL - check if it could also be Telegram username
+        username_candidate = search_value.replace('@', '').strip()
+        if username_candidate and not ' ' in username_candidate:
+            if len(username_candidate) >= 5 and all(c.isalnum() or c in ['_', '.', '-'] for c in username_candidate):
+                is_valid_tg, _, _ = validate_telegram_name(username_candidate)
+                if is_valid_tg:
+                    is_ambiguous = True
+                    logger.info(f"[SMART_CHECK] Ambiguous value: could be both telegram_user and facebook_link, using multi-field search")
+    
     # Route to appropriate search function based on detected type
-    if field_type == 'facebook_link':
+    if field_type == 'facebook_link' and is_ambiguous:
+        # Ambiguous case - use multi-field search to search in both columns
+        return await check_by_multiple_fields(update, context, search_value)
+    elif field_type == 'facebook_link':
         # Use existing check_by_field for Facebook link
         return await check_by_field(update, context, "facebook_link", "Facebook Ссылка", SMART_CHECK_INPUT)
     
@@ -4338,6 +4843,15 @@ def cleanup_user_data_store(exclude_user_id: int = None):
             if user_id in user_data_store_access_time:
                 del user_data_store_access_time[user_id]
     
+
+async def async_cleanup_user_data_store():
+    """Async wrapper for cleanup_user_data_store to be used in scheduler"""
+    try:
+        cleanup_user_data_store()
+        cleaned_count = len(user_data_store)
+        logger.info(f"[CLEANUP] Automatic cleanup completed. Current user_data_store size: {cleaned_count}")
+    except Exception as e:
+        logger.error(f"[CLEANUP] Error during automatic cleanup: {e}", exc_info=True)
 
 async def check_duplicate_realtime(client, field_name: str, field_value: str) -> tuple[bool, str]:
     """Check if a field value already exists in the database (for real-time validation)"""
@@ -4780,10 +5294,13 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Map ConversationHandler states to field names
     state_to_field = {
         ADD_FULLNAME: 'fullname',
-        # ADD_FB_LINK: 'facebook_link',  # Temporarily disabled
+    }
+    if is_facebook_flow_enabled():
+        state_to_field[ADD_FB_LINK] = 'facebook_link'
+    state_to_field.update({
         ADD_TELEGRAM_NAME: 'telegram_name',
         ADD_TELEGRAM_ID: 'telegram_id',
-    }
+    })
     
     # Get field_name from state first (more reliable)
     field_name = state_to_field.get(current_state)
@@ -4848,6 +5365,42 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return current_state
     
     elif field_name == 'telegram_name':
+        # First check if the input is a Facebook URL - if so, reject it
+        text_lower = text.lower()
+        has_url_patterns = (
+            'facebook.com' in text_lower or
+            'http://' in text_lower or
+            'https://' in text_lower or
+            'www.' in text_lower
+        )
+        is_fb_url = False
+        if has_url_patterns:
+            is_fb_url, fb_error_msg, _ = validate_facebook_link(text)
+        text_lower = text.lower()
+        has_url_patterns = (
+            'facebook.com' in text_lower or
+            'http://' in text_lower or
+            'https://' in text_lower or
+            'www.' in text_lower
+        )
+        is_fb_url = False
+        if has_url_patterns:
+            is_fb_url, fb_error_msg, _ = validate_facebook_link(text)
+        if is_fb_url:
+            field_label = get_field_label('telegram_name')
+            requirements = get_field_format_requirements('telegram_name')
+            sent_message = await update.message.reply_text(
+                f"❌ <b>Ошибка:</b> Вы ввели Facebook ссылку в поле \"{field_label}\".\n\n"
+                f"💡 <b>Что делать:</b>\n"
+                f"• Для Facebook ссылки используйте соответствующее поле (если доступно)\n"
+                f"• Для Telegram username введите только username без URL\n\n"
+                f"📝 Введите {field_label}:\n\n{requirements}",
+                reply_markup=get_navigation_keyboard(is_optional=True, show_back=True),
+                parse_mode='HTML'
+            )
+            await save_add_message(update, context, sent_message.message_id)
+            return current_state
+        
         is_valid, error_msg, normalized = validate_telegram_name(text)
         if is_valid:
             validation_passed = True
@@ -4975,17 +5528,13 @@ async def add_field_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_forwarded = context.user_data.get('is_forwarded_message', False)
         
         # If Facebook link is valid, automatically skip Telegram fields and go to review
-        # Temporarily disabled - facebook_link step is commented out
-        # if field_name == 'facebook_link' and validation_passed:
-        #     logger.info(f"[ADD_FIELD] Facebook link is valid, auto-skipping Telegram fields (telegram_name, telegram_id)")
-        #     # Skip telegram_name and telegram_id, go directly to review
-        #     next_field, next_state, current_step, total_steps = get_next_add_field('telegram_id', skip_facebook_link=is_forwarded)
-        # else:
-        #     # Normal flow - move to next field
-        #     next_field, next_state, current_step, total_steps = get_next_add_field(field_name, skip_facebook_link=is_forwarded)
-        
-        # Normal flow - move to next field
-        next_field, next_state, current_step, total_steps = get_next_add_field(field_name, skip_facebook_link=is_forwarded)
+        if is_facebook_flow_enabled() and field_name == 'facebook_link' and validation_passed:
+            logger.info(f"[ADD_FIELD] Facebook link is valid, auto-skipping Telegram fields (telegram_name, telegram_id)")
+            # Skip telegram_name and telegram_id, go directly to review
+            next_field, next_state, current_step, total_steps = get_next_add_field('telegram_id', skip_facebook_link=is_forwarded)
+        else:
+            # Normal flow - move to next field
+            next_field, next_state, current_step, total_steps = get_next_add_field(field_name, skip_facebook_link=is_forwarded)
     else:
         logger.warning(f"[ADD_FIELD] Not saving {field_name}: validation_passed={validation_passed}, normalized_value='{normalized_value}'")
         # Check if this is a forwarded message
@@ -5234,16 +5783,16 @@ async def handle_photo_during_add(update: Update, context: ContextTypes.DEFAULT_
             logger.info(f"[PHOTO_DURING_ADD] Extracted fullname from caption: '{normalized_fullname}' for user {user_id}")
             logger.info(f"[PHOTO_DURING_ADD] After saving fullname - user_data_store[{user_id}] keys: {list(user_data_store[user_id].keys())}, photo_file_id={user_data_store[user_id].get('photo_file_id')}")
             
-            # Move to next step (ADD_TELEGRAM_NAME)
-            # Facebook link step temporarily disabled
-            context.user_data['current_field'] = 'telegram_name'
-            context.user_data['current_state'] = ADD_TELEGRAM_NAME
-            context.user_data['add_step'] = 1
+            # Use get_next_add_field to determine next field after fullname (respects FACEBOOK_FLOW)
+            # skip_facebook_link=False because this is not a forwarded message
+            next_field, next_state, current_step, total_steps = get_next_add_field('fullname', skip_facebook_link=False)
+            context.user_data['current_field'] = next_field
+            context.user_data['current_state'] = next_state
+            context.user_data['add_step'] = current_step - 1
             
             # Get next field info
-            field_label = get_field_label('telegram_name')
-            _, _, current_step, total_steps = get_next_add_field('fullname')
-            requirements = get_field_format_requirements('telegram_name')
+            field_label = get_field_label(next_field)
+            requirements = get_field_format_requirements(next_field)
             
             # Notify user and ask for next field
             await update.message.reply_text(
@@ -5380,6 +5929,25 @@ async def forwarded_add_callback(update: Update, context: ContextTypes.DEFAULT_T
     for key, value in extracted_data.items():
         if key not in user_data_store[user_id] or not user_data_store[user_id][key]:
             user_data_store[user_id][key] = value
+
+    # If fullname is missing, ask for it instead of going to review
+    if not user_data_store[user_id].get('fullname'):
+        _, _, current_step, total_steps = get_next_add_field('')
+        progress_text = f"<b>Шаг {current_step} из {total_steps}</b>\n\n"
+        field_label = get_field_label('fullname')
+
+        context.user_data['current_state'] = ADD_FULLNAME
+        context.user_data['current_field'] = 'fullname'
+        context.user_data['add_step'] = 0
+
+        await query.edit_message_text(
+            f"{progress_text}📝 Введите {field_label}:",
+            reply_markup=get_navigation_keyboard(is_optional=False, show_back=False),
+            parse_mode='HTML'
+        )
+        if query.message:
+            await save_add_message(update, context, query.message.message_id)
+        return ADD_FULLNAME
     
     # Mark as forwarded message
     context.user_data['is_forwarded_message'] = True
@@ -5434,6 +6002,102 @@ async def forwarded_check_callback(update: Update, context: ContextTypes.DEFAULT
         # No fields to check
         await query.edit_message_text(
             "❌ Не удалось извлечь данные для проверки из пересланного сообщения.\n\n"
+            "Попробуйте добавить лид вручную.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+    
+    # Use check_by_extracted_fields function
+    await check_by_extracted_fields(update, context, checkable_fields)
+    
+    return ConversationHandler.END
+
+async def photo_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle 'Add' button for photo message - go directly to Review"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    logger.info(f"[PHOTO_ADD] User {user_id} chose to add photo message")
+    
+    # Get extracted data from context or user_data_store
+    extracted_data = context.user_data.get('photo_extracted_data', {})
+    if not extracted_data and user_id in user_data_store:
+        # Fallback: get from user_data_store
+        extracted_data = {k: v for k, v in user_data_store[user_id].items() 
+                         if k in ['fullname', 'telegram_name', 'telegram_id', 'facebook_link', 'photo_file_id']}
+    
+    # Ensure user_data_store has the extracted data
+    # Protect photo_file_id from being lost if user_data_store is recreated
+    saved_photo_file_id = None
+    if user_id in user_data_store and 'photo_file_id' in user_data_store[user_id]:
+        saved_photo_file_id = user_data_store[user_id]['photo_file_id']
+        logger.info(f"[PHOTO_ADD] Preserving photo_file_id: {saved_photo_file_id}")
+    
+    if user_id not in user_data_store:
+        user_data_store[user_id] = {}
+        user_data_store_access_time[user_id] = time.time()
+    
+    # Restore photo_file_id if it was saved
+    if saved_photo_file_id and 'photo_file_id' not in user_data_store[user_id]:
+        user_data_store[user_id]['photo_file_id'] = saved_photo_file_id
+        logger.info(f"[PHOTO_ADD] Restored photo_file_id: {saved_photo_file_id}")
+    
+    # Save extracted data to user_data_store if not already there
+    for key, value in extracted_data.items():
+        if key not in user_data_store[user_id] or not user_data_store[user_id][key]:
+            user_data_store[user_id][key] = value
+    
+    # Set state to ADD_REVIEW
+    context.user_data['current_state'] = ADD_REVIEW
+    context.user_data['current_field'] = 'review'
+    
+    # Log state transition for diagnostics
+    has_conversation_keys = any(
+        key.startswith('_conversation_') 
+        for key in (context.user_data.keys() if context.user_data else [])
+    )
+    conversation_keys_list = [k for k in (context.user_data.keys() if context.user_data else []) if k.startswith('_conversation_')]
+    logger.info(
+        f"[PHOTO_ADD] Set ADD_REVIEW state for user {user_id}, "
+        f"has_conversation_keys={has_conversation_keys}, conversation_keys={conversation_keys_list}, "
+        f"user_data_store_keys={list(user_data_store.get(user_id, {}).keys())}, "
+        f"ConversationHandler should activate via entry points"
+    )
+    
+    # Show review immediately
+    await show_add_review(update, context)
+    
+    return ADD_REVIEW
+
+async def photo_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle 'Check' button for photo message - check by extracted fields"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    logger.info(f"[PHOTO_CHECK] User {user_id} chose to check photo message")
+    
+    # Get extracted data from context or user_data_store
+    extracted_data = context.user_data.get('photo_extracted_data', {})
+    if not extracted_data and user_id in user_data_store:
+        # Fallback: get from user_data_store
+        extracted_data = {k: v for k, v in user_data_store[user_id].items() 
+                         if k in ['fullname', 'telegram_name', 'telegram_id']}
+    
+    # Extract checkable fields
+    checkable_fields = {}
+    if 'fullname' in extracted_data and extracted_data['fullname']:
+        checkable_fields['fullname'] = extracted_data['fullname']
+    if 'telegram_name' in extracted_data and extracted_data['telegram_name']:
+        checkable_fields['telegram_name'] = extracted_data['telegram_name']
+    if 'telegram_id' in extracted_data and extracted_data['telegram_id']:
+        checkable_fields['telegram_id'] = extracted_data['telegram_id']
+    
+    if not checkable_fields:
+        # No fields to check
+        await query.edit_message_text(
+            "❌ Не удалось извлечь данные для проверки из фото.\n\n"
             "Попробуйте добавить лид вручную.",
             reply_markup=get_main_menu_keyboard()
         )
@@ -6005,8 +6669,9 @@ async def edit_fullname_from_review_callback(update: Update, context: ContextTyp
     keyboard.append([InlineKeyboardButton("✏️ Тег Telegram", callback_data="add_edit_field_telegram_name")])
     keyboard.append([InlineKeyboardButton("✏️ Telegram ID", callback_data="add_edit_field_telegram_id")])
     
-    # Facebook ссылка используется реже, но поддерживается
-    keyboard.append([InlineKeyboardButton("✏️ Facebook ссылка", callback_data="add_edit_field_fb_link")])
+    # Facebook ссылка - только если FACEBOOK_FLOW включен
+    if is_facebook_flow_enabled():
+        keyboard.append([InlineKeyboardButton("✏️ Facebook ссылка", callback_data="add_edit_field_fb_link")])
     
     keyboard.append([InlineKeyboardButton("⬅️ К обзору", callback_data="add_edit_back_to_review")])
     keyboard.append([InlineKeyboardButton("❌ Отменить", callback_data="add_cancel")])
@@ -6049,13 +6714,24 @@ async def add_edit_field_from_review(update: Update, context: ContextTypes.DEFAU
     # После редактирования поля нужно вернуться к обзору
     context.user_data['return_to_review'] = True
     
+    # Проверка: facebook_link можно редактировать только если FACEBOOK_FLOW включен
+    if field_name == 'facebook_link' and not is_facebook_flow_enabled():
+        logger.warning(f"[ADD_EDIT_FROM_REVIEW] Attempt to edit facebook_link when FACEBOOK_FLOW is disabled for user {user_id}")
+        await query.edit_message_text(
+            "❌ Ошибка: редактирование Facebook ссылки недоступно, так как Facebook flow отключен.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+    
     # Карту полей в соответствующие состояния add flow
     field_to_state = {
         'fullname': ADD_FULLNAME,
-        'facebook_link': ADD_FB_LINK,
         'telegram_name': ADD_TELEGRAM_NAME,
         'telegram_id': ADD_TELEGRAM_ID,
     }
+    # Добавляем facebook_link только если FACEBOOK_FLOW включен
+    if is_facebook_flow_enabled():
+        field_to_state['facebook_link'] = ADD_FB_LINK
     
     target_state = field_to_state.get(field_name)
     if not target_state:
@@ -6163,13 +6839,16 @@ async def add_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Определить последнее заполненное поле или последнее поле в последовательности
         field_sequence = [
             ('fullname', ADD_FULLNAME),
-            # ('facebook_link', ADD_FB_LINK),  # Temporarily disabled
+        ]
+        if is_facebook_flow_enabled():
+            field_sequence.append(('facebook_link', ADD_FB_LINK))
+        field_sequence.extend([
             ('telegram_name', ADD_TELEGRAM_NAME),
             ('telegram_id', ADD_TELEGRAM_ID),
-        ]
+        ])
         
         # Filter out facebook_link if this is a forwarded message
-        # Note: facebook_link is already commented out above, but keeping this logic for consistency
+        # Facebook link step - controlled by FACEBOOK_FLOW env var
         if is_forwarded:
             field_sequence = [f for f in field_sequence if f[0] != 'facebook_link']
         
@@ -6220,13 +6899,16 @@ async def add_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Get previous field - filter out facebook_link for forwarded messages
     field_sequence = [
         ('fullname', ADD_FULLNAME),
-        # ('facebook_link', ADD_FB_LINK),  # Temporarily disabled
+    ]
+    if is_facebook_flow_enabled():
+        field_sequence.append(('facebook_link', ADD_FB_LINK))
+    field_sequence.extend([
         ('telegram_name', ADD_TELEGRAM_NAME),
         ('telegram_id', ADD_TELEGRAM_ID),
-    ]
+    ])
     
     # Filter out facebook_link if this is a forwarded message
-    # Note: facebook_link is already commented out above, but keeping this logic for consistency
+    # Facebook link step - controlled by FACEBOOK_FLOW env var
     if is_forwarded:
         field_sequence = [f for f in field_sequence if f[0] != 'facebook_link']
     
@@ -6380,22 +7062,44 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_state'] = ADD_FULLNAME
         return ADD_FULLNAME
     
-    # Check if at least one identifier is present
-    required_fields = ['telegram_name', 'telegram_id']  # facebook_link temporarily disabled
-    has_identifier = any(user_data.get(field) for field in required_fields)
-    
-    if not has_identifier:
-        await query.edit_message_text(
-            "❌ <b>Ошибка:</b> Необходимо указать минимум одно из полей для идентификации клиента:\n\n"
-            # "• <b>Facebook Ссылка</b> - ссылка на профиль Facebook\n"  # Temporarily disabled
-            "• <b>Тег Telegram</b> - username клиента (минимум 5 символов)\n"
-            "• <b>Telegram ID</b> - числовой идентификатор (минимум 5 цифр)\n\n"
-            "ℹ️ Поле <b>Имя клиента</b> является обязательным.\n"
-            "Одно из полей идентификации также обязательно.",
-            reply_markup=get_main_menu_keyboard(),
-            parse_mode='HTML'
-        )
-        return ConversationHandler.END
+    # Check if at least one identifier is present (only if minimal mode is disabled)
+    if not is_minimal_add_mode_enabled():
+        required_fields = ['telegram_name', 'telegram_id']
+        if is_facebook_flow_enabled():
+            required_fields.append('facebook_link')
+        has_identifier = any(user_data.get(field) for field in required_fields)
+        
+        if not has_identifier:
+            error_msg = "❌ <b>Ошибка:</b> Необходимо указать минимум одно из полей для идентификации клиента:\n\n"
+            if is_facebook_flow_enabled():
+                error_msg += "• <b>Facebook Ссылка</b> - ссылка на профиль Facebook\n"
+            error_msg += "• <b>Тег Telegram</b> - username клиента (минимум 5 символов)\n"
+            error_msg += "• <b>Telegram ID</b> - числовой идентификатор (минимум 5 цифр)\n\n"
+            error_msg += "ℹ️ Поле <b>Имя клиента</b> является обязательным.\n"
+            error_msg += "Одно из полей идентификации также обязательно."
+            await query.edit_message_text(
+                error_msg,
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode='HTML'
+            )
+            return ConversationHandler.END
+    else:
+        # Minimal mode: require photo
+        had_photo = user_data.get('had_photo') or (user_id in user_data_store and user_data_store[user_id].get('had_photo'))
+        photo_file_id_exists = 'photo_file_id' in user_data or (user_id in user_data_store and 'photo_file_id' in user_data_store[user_id])
+        
+        if not had_photo and not photo_file_id_exists:
+            error_msg = "❌ <b>Ошибка:</b> В режиме минимального добавления необходимо прикрепить фото.\n\n"
+            error_msg += "💡 <b>Что нужно сделать:</b>\n"
+            error_msg += "• Прикрепите фото к сообщению с именем клиента\n"
+            error_msg += "• Или вернитесь к шагу добавления и прикрепите фото\n\n"
+            error_msg += "ℹ️ В минимальном режиме требуется только <b>имя</b> и <b>фото</b> клиента."
+            await query.edit_message_text(
+                error_msg,
+                reply_markup=get_main_menu_keyboard(),
+                parse_mode='HTML'
+            )
+            return ConversationHandler.END
     
     # Get Supabase client for uniqueness check
     client = get_supabase_client()
@@ -6504,6 +7208,9 @@ async def add_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # The photo_url will be set later after successful upload
         if 'photo_file_id' in save_data:
             save_data.pop('photo_file_id')
+        # Remove had_photo - internal flag, not a DB column
+        if 'had_photo' in save_data:
+            save_data.pop('had_photo')
         
         # Map telegram_name to telegram_user for database (backward compatibility)
         if 'telegram_name' in save_data:
@@ -7277,17 +7984,21 @@ async def edit_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return EDIT_MENU
     
     # Check if at least one identifier is present
-    required_fields = ['facebook_link', 'telegram_name', 'telegram_id']
+    required_fields = ['telegram_name', 'telegram_id']
+    if is_facebook_flow_enabled():
+        required_fields.insert(0, 'facebook_link')
     # Also check telegram_user for backward compatibility
     has_identifier = any(user_data.get(field) for field in required_fields) or user_data.get('telegram_user')
     
     if not has_identifier:
+        error_msg = "❌ <b>Ошибка:</b> Необходимо указать минимум одно из полей для идентификации клиента:\n\n"
+        if is_facebook_flow_enabled():
+            error_msg += "• <b>Facebook Ссылка</b> - ссылка на профиль Facebook\n"
+        error_msg += "• <b>Тег Telegram</b> - username клиента (минимум 5 символов)\n"
+        error_msg += "• <b>Telegram ID</b> - числовой идентификатор (минимум 5 цифр)\n\n"
+        error_msg += "Выберите поле для редактирования:"
         await query.edit_message_text(
-            "❌ <b>Ошибка:</b> Необходимо указать минимум одно из полей для идентификации клиента:\n\n"
-            "• <b>Facebook Ссылка</b> - ссылка на профиль Facebook\n"
-            "• <b>Тег Telegram</b> - username клиента (минимум 5 символов)\n"
-            "• <b>Telegram ID</b> - числовой идентификатор (минимум 5 цифр)\n\n"
-            "Выберите поле для редактирования:",
+            error_msg,
             reply_markup=get_edit_field_keyboard(user_id, context.user_data.get('original_lead_data', {})),
             parse_mode='HTML'
         )
@@ -7846,37 +8557,30 @@ def create_telegram_app():
     # )
     
     # Conversation handler for adding - sequential flow
-    add_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(add_new_callback, pattern="^add_new$"),
-            CallbackQueryHandler(forwarded_add_callback, pattern="^forwarded_add$"),
-            # Allow MessageHandler to enter if user has add state initialized (from forwarded message)
-            MessageHandler(filters.TEXT & ~filters.COMMAND, check_add_state_entry),
-            # Allow CallbackQueryHandler to enter if user has add state initialized (from forwarded message)
-            # This handles callbacks like add_skip, add_back, add_save when flow was started via forwarded message
-            CallbackQueryHandler(check_add_state_entry_callback, pattern="^(add_skip|add_back|add_cancel|add_save|add_save_force)$")
+    add_conv_states = {
+        ADD_FULLNAME: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+            MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_add),
+            MessageHandler(filters.Document.ALL & ~filters.FORWARDED, handle_document_during_add),
+            CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+            CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            CommandHandler("q", quit_command),
+            CommandHandler("start", start_command),
         ],
-        states={
-            ADD_FULLNAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
-                MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_add),
-                MessageHandler(filters.Document.ALL & ~filters.FORWARDED, handle_document_during_add),
-                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
-                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
-                CommandHandler("q", quit_command),
-                CommandHandler("start", start_command),
-            ],
-            ADD_FB_LINK: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
-                MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_add),
-                MessageHandler(filters.Document.ALL & ~filters.FORWARDED, handle_document_during_add),
-                CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
-                CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
-                CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
-                CommandHandler("q", quit_command),
-                CommandHandler("start", start_command),
-            ],
-            ADD_TELEGRAM_NAME: [
+    }
+    if is_facebook_flow_enabled():
+        add_conv_states[ADD_FB_LINK] = [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
+            MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_add),
+            MessageHandler(filters.Document.ALL & ~filters.FORWARDED, handle_document_during_add),
+            CallbackQueryHandler(add_skip_callback, pattern="^add_skip$"),
+            CallbackQueryHandler(add_back_callback, pattern="^add_back$"),
+            CallbackQueryHandler(add_cancel_callback, pattern="^add_cancel$"),
+            CommandHandler("q", quit_command),
+            CommandHandler("start", start_command),
+        ]
+    add_conv_states.update({
+        ADD_TELEGRAM_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_field_input),
                 MessageHandler(filters.PHOTO & ~filters.FORWARDED, handle_photo_during_add),
                 MessageHandler(filters.Document.ALL & ~filters.FORWARDED, handle_document_during_add),
@@ -7913,7 +8617,20 @@ def create_telegram_app():
                 CommandHandler("q", quit_command),
                 CommandHandler("start", start_command),
             ],
-        },
+    })
+    
+    add_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(add_new_callback, pattern="^add_new$"),
+            CallbackQueryHandler(forwarded_add_callback, pattern="^forwarded_add$"),
+            CallbackQueryHandler(photo_add_callback, pattern="^photo_add$"),
+            # Allow MessageHandler to enter if user has add state initialized (from forwarded message)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, check_add_state_entry),
+            # Allow CallbackQueryHandler to enter if user has add state initialized (from forwarded message)
+            # This handles callbacks like add_skip, add_back, add_save when flow was started via forwarded message
+            CallbackQueryHandler(check_add_state_entry_callback, pattern="^(add_skip|add_back|add_cancel|add_save|add_save_force)$")
+        ],
+        states=add_conv_states,
         fallbacks=[CommandHandler("q", quit_command), CommandHandler("start", start_command)],
         per_message=False,
     )
@@ -8041,6 +8758,10 @@ def create_telegram_app():
     # Note: forwarded_add_callback is registered in add_conv entry_points, so no need to register separately
     telegram_app.add_handler(CallbackQueryHandler(forwarded_check_callback, pattern="^forwarded_check$"))
     
+    # Add callback query handler for photo message check action (register BEFORE button_callback)
+    # Note: photo_add_callback is registered in add_conv entry_points, so no need to register separately
+    telegram_app.add_handler(CallbackQueryHandler(photo_check_callback, pattern="^photo_check$"))
+    
     # Add callback query handler for menu navigation buttons
     # Registered AFTER ConversationHandlers so they have priority
     # Note: check_menu is now handled by smart_check_conv ConversationHandler
@@ -8093,8 +8814,35 @@ def setup_keep_alive_scheduler():
             replace_existing=True
         )
         
+        # Add job for automatic user_data_store cleanup
+        scheduler.add_job(
+            async_cleanup_user_data_store,
+            trigger=IntervalTrigger(minutes=CLEANUP_INTERVAL_MINUTES),
+            id='cleanup_user_data_store',
+            name='Cleanup user_data_store',
+            replace_existing=True
+        )
+        
+        # Add job for rate limit store cleanup every 5 minutes
+        async def async_cleanup_rate_limit_store():
+            """Async wrapper for cleanup_rate_limit_store"""
+            try:
+                cleanup_rate_limit_store()
+            except Exception as e:
+                logger.error(f"[RATE_LIMIT_CLEANUP] Error: {e}", exc_info=True)
+        
+        scheduler.add_job(
+            async_cleanup_rate_limit_store,
+            trigger=IntervalTrigger(minutes=5),
+            id='cleanup_rate_limit_store',
+            name='Cleanup rate_limit_store',
+            replace_existing=True
+        )
+        
         scheduler.start()
         logger.info("Keep-alive scheduler started: bot.get_me() will be called every 5 minutes")
+        logger.info(f"Automatic cleanup scheduler started: user_data_store cleanup every {CLEANUP_INTERVAL_MINUTES} minutes")
+        logger.info("Rate limit store cleanup scheduler started: cleanup every 5 minutes")
     except Exception as e:
         logger.error(f"Failed to setup keep-alive scheduler: {e}", exc_info=True)
 
