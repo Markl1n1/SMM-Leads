@@ -82,6 +82,8 @@ async def edit_lead_callback(update: Update, context: ContextTypes.DEFAULT_TYPE,
         
         # Reset PIN attempt counter when starting new edit
         context.user_data['pin_attempts'] = 0
+        # Explicitly set current_state to EDIT_PIN to prevent other handlers from intercepting
+        context.user_data['current_state'] = EDIT_PIN
         
         # Request PIN code before allowing editing
         message = f"🔒 Для редактирования лида (ID: {lead_id}) требуется PIN-код.\n\nВведите PIN-код:"
@@ -136,6 +138,18 @@ async def edit_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip()
     lead_id = context.user_data.get('editing_lead_id')
+    
+    # Add logging for PIN input
+    logger.info(
+        f"[EDIT_PIN_INPUT] User {user_id} entered PIN, "
+        f"text_length={len(text)}, "
+        f"text='{text}', "
+        f"PIN_CODE_length={len(PIN_CODE) if PIN_CODE else 0}, "
+        f"PIN_CODE='{PIN_CODE}', "
+        f"editing_lead_id={lead_id}, "
+        f"current_state={current_state}, "
+        f"pin_attempts={context.user_data.get('pin_attempts', 0)}"
+    )
     
     if not lead_id:
         await update.message.reply_text(
