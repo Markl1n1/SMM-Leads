@@ -103,6 +103,38 @@ async def transfer_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data.pop(key, None)
         return ConversationHandler.END
 
+    # Safety check: if we're not in TRANSFER_PIN state with pin_attempts,
+    # treat this as a stale PIN flow and do not intercept the message
+    is_valid_transfer_pin_state = (
+        context.user_data.get('current_state') == TRANSFER_PIN and 
+        'pin_attempts' in context.user_data
+    )
+    has_transfer_flow_markers = (
+        context.user_data.get('transfer_from_manager') or 
+        context.user_data.get('transfer_to_manager') or
+        context.user_data.get('transfer_manager_names')
+    )
+    
+    if not is_valid_transfer_pin_state and not has_transfer_flow_markers:
+        logger.info(
+            f"[TRANSFER_PIN_INPUT] Called without active transfer flow markers for user {user_id}, "
+            f"current_state={context.user_data.get('current_state')}, "
+            f"pin_attempts={'pin_attempts' in context.user_data}, "
+            "treating as stale PIN flow and ending conversation"
+        )
+        if 'pin_attempts' in context.user_data:
+            del context.user_data['pin_attempts']
+        return ConversationHandler.END
+
+    # Add logging for PIN input
+    logger.info(
+        f"[TRANSFER_PIN_INPUT] ⚡ Function CALLED for user {user_id}, "
+        f"message_text='{update.message.text if update.message and update.message.text else None}', "
+        f"current_state={context.user_data.get('current_state')}, "
+        f"pin_attempts={context.user_data.get('pin_attempts')}, "
+        f"conversation_keys={[k for k in (context.user_data.keys() if context.user_data else []) if k.startswith('_conversation_')]}"
+    )
+
     if not update.message or not update.message.text:
         if update.message:
             await update.message.reply_text(
@@ -113,6 +145,18 @@ async def transfer_pin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return TRANSFER_PIN
 
     text = update.message.text.strip()
+    
+    # Add detailed logging
+    logger.info(
+        f"[TRANSFER_PIN_INPUT] User {user_id} entered PIN, "
+        f"text_length={len(text)}, "
+        f"text='{text}', "
+        f"PIN_CODE_length={len(PIN_CODE) if PIN_CODE else 0}, "
+        f"PIN_CODE='{PIN_CODE}', "
+        f"current_state={current_state}, "
+        f"pin_attempts={context.user_data.get('pin_attempts', 0)}"
+    )
+    
     if text == PIN_CODE:
         if 'pin_attempts' in context.user_data:
             del context.user_data['pin_attempts']
